@@ -163,10 +163,10 @@ body.proj #panel { display: none; }
   <section id="dgBox" hidden>
     <h2>Moteur Deepgram</h2>
     <form id="dgForm" class="field">
-      <input id="dgKey" type="password" autocomplete="off" placeholder="Clé API Deepgram" aria-label="Clé API Deepgram">
+      <input id="dgKey" type="password" autocomplete="off" placeholder="Code d'accès" aria-label="Code d'accès Deepgram">
       <button class="btn" type="submit">Enregistrer</button>
     </form>
-    <p class="note"><span id="dgNote"></span> <button id="dgClear" class="chip" type="button" hidden>Retirer la clé</button></p>
+    <p class="note"><span id="dgNote"></span> <button id="dgClear" class="chip" type="button" hidden>Oublier le code</button></p>
   </section>
 
   <section>
@@ -791,10 +791,12 @@ body.proj #panel { display: none; }
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition, n = $('engineNote');
     $('langRow').hidden = !!dict || inArtifact || !SR;
     $('dgBox').hidden = inArtifact;
-    var hasKey = !!dgKey();
-    $('dgClear').hidden = !hasKey;
-    $('dgKey').placeholder = hasKey ? 'Clé enregistrée (coller pour remplacer)' : 'Clé API Deepgram';
-    $('dgNote').textContent = hasKey ? 'La clé est gardée sur cet ordinateur seulement.' : 'Sans clé, l\'appli utilise la reconnaissance vocale de Chrome, moins précise sur les noms de livres.';
+    var hasKey = !!dgKey() && !!DG_SERVICE;
+    $('dgClear').hidden = !dgKey();
+    $('dgKey').placeholder = dgKey() ? 'Code enregistré (taper pour remplacer)' : "Code d'accès";
+    $('dgNote').textContent = !DG_SERVICE ? "Le service Deepgram n'est pas encore configuré dans ce fichier." :
+      (dgKey() ? 'La clé Deepgram reste sur le service sécurisé : cet ordinateur garde seulement le code.' :
+       "Entre le code d'accès une fois sur cet ordinateur. Sans code, l'appli utilise la reconnaissance de Chrome, moins précise.");
     if (!inArtifact && hasKey) {
       $('langRow').hidden = false;
       n.textContent = 'Moteur utilisé : Deepgram, avec la liste des livres de la Bible. Internet requis.';
@@ -852,8 +854,22 @@ body.proj #panel { display: none; }
     try { rec.start(); } catch (e) { say("Impossible de démarrer l'écoute."); }
   }
   /* ---------- Deepgram : transcription en continu, avec les noms des livres fournis d'avance ---------- */
+  var DG_SERVICE = 'https://versets-cle.jeanpaulbai7.workers.dev';
+  if (DG_SERVICE.indexOf('__') === 0) DG_SERVICE = '';
   var dg = { ws: null, mr: null, stream: null, triedPlain: false };
-  function dgKey() { return (store('vd-dgkey') || '').trim(); }
+  try { localStorage.removeItem('vd-dgkey'); } catch (e) {}          // ancienne clé : on ne la garde plus dans le navigateur
+  function dgKey() { return (store('vd-code') || '').trim(); }
+  /* Demande au service un laissez-passer Deepgram de 30 secondes. */
+  function dgToken(code) {
+    return fetch(DG_SERVICE, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }), cache: 'no-store' })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (r.status === 401) throw new Error('code');
+          if (!r.ok || !d.access_token) throw new Error('service');
+          return d.access_token;
+        });
+      });
+  }
   function dgTerms() {
     var seen = {}, out = [];
     core.names.forEach(function (n) { n = n.replace(/^\d\s+/, ''); if (!seen[n]) { seen[n] = 1; out.push(n); } });
@@ -867,11 +883,21 @@ body.proj #panel { display: none; }
     if (dg.stream) { dg.stream.getTracks().forEach(function (t) { t.stop(); }); dg.stream = null; }
     dg.ws = null; setListening(false);
   }
-  function dgOpen(key, withTerms) {
+  function dgOpen(code, withTerms) {
+    dgToken(code).then(function (tok) {
+      if (!st.want) { dgRelease(); return; }
+      dgConnect(code, tok, withTerms);
+    }).catch(function (err) {
+      st.want = false; dgRelease();
+      if (err && err.message === 'code') say("Code d'accès refusé. Vérifie-le dans la section « Moteur Deepgram ».");
+      else say('Le service Deepgram ne répond pas. Vérifie la connexion Internet, puis réessaie.');
+    });
+  }
+  function dgConnect(key, tok, withTerms) {
     var q = 'model=nova-3&language=' + ($('lang').value === 'fr-CA' ? 'fr-CA' : 'fr') + '&interim_results=true&smart_format=true';
     if (withTerms) dgTerms().forEach(function (t) { q += '&keyterm=' + encodeURIComponent(t); });
     var ws, opened = false;
-    try { ws = new WebSocket('wss://api.deepgram.com/v1/listen?' + q, ['token', key]); }
+    try { ws = new WebSocket('wss://api.deepgram.com/v1/listen?' + q, ['bearer', tok]); }
     catch (e) { st.want = false; dgRelease(); say('Impossible de joindre Deepgram.'); return; }
     dg.ws = ws;
     ws.onopen = function () {
@@ -897,7 +923,7 @@ body.proj #panel { display: none; }
       if (!opened) {
         if (withTerms && !dg.triedPlain) { dg.triedPlain = true; dgOpen(key, false); return; }
         st.want = false; dgRelease();
-        say('Deepgram a refusé la connexion. Vérifie la clé API, le crédit du compte et la connexion Internet.');
+        say('Deepgram a refusé la connexion. Vérifie le crédit du compte Deepgram et la connexion Internet.');
         return;
       }
       if (st.interim) { appendFinal(st.interim); st.interim = ''; process(); }
@@ -926,7 +952,7 @@ body.proj #panel { display: none; }
   function startListening() {
     stopDemo(); say('');
     var k = dgKey();
-    if (!inArtifact && k) { startDeepgram(k); return; }
+    if (!inArtifact && k && DG_SERVICE) { startDeepgram(k); return; }
     if (dict) {
       st.want = true;
       dict.start().catch(function (err) {
@@ -1007,11 +1033,11 @@ body.proj #panel { display: none; }
   $('dgForm').addEventListener('submit', function (ev) {
     ev.preventDefault();
     var v = $('dgKey').value.trim(); if (!v) return;
-    store('vd-dgkey', v); $('dgKey').value = '';
-    if (dgKey() !== v) say("La clé n'a pas pu être enregistrée dans ce navigateur."); else say('');
+    store('vd-code', v); $('dgKey').value = '';
+    if (dgKey() !== v) say("Le code n'a pas pu être enregistré dans ce navigateur."); else say('');
     engineNote();
   });
-  $('dgClear').addEventListener('click', function () { try { localStorage.removeItem('vd-dgkey'); } catch (e) {} engineNote(); });
+  $('dgClear').addEventListener('click', function () { try { localStorage.removeItem('vd-code'); } catch (e) {} engineNote(); });
   $('auto').addEventListener('change', function () { store('vd-auto', $('auto').checked ? '1' : '0'); });
   $('lang').addEventListener('change', function () { store('vd-lang', $('lang').value); });
   document.addEventListener('keydown', function (ev) {
