@@ -865,6 +865,9 @@ body.proj #panel { display: none; }
       .then(function (r) {
         return r.json().catch(function () { return {}; }).then(function (d) {
           if (r.status === 401) throw new Error('code');
+          if (d && d.erreur === 'config') throw new Error('config');
+          if (d && d.erreur === 'deepgram') throw new Error('deepgram');
+          if (d && d.erreur === 'refuse') throw new Error('refuse');
           if (!r.ok || !d.access_token) throw new Error('service');
           return d.access_token;
         });
@@ -889,7 +892,11 @@ body.proj #panel { display: none; }
       dgConnect(code, tok, withTerms);
     }).catch(function (err) {
       st.want = false; dgRelease();
-      if (err && err.message === 'code') say("Code d'accès refusé. Vérifie-le dans la section « Moteur Deepgram ».");
+      var m = err && err.message;
+      if (m === 'code') say("Code d'accès refusé. Vérifie-le dans la section « Moteur Deepgram ».");
+      else if (m === 'config') say('Service Cloudflare incomplet : il manque le secret DEEPGRAM_API_KEY ou CODE_ACCES.');
+      else if (m === 'deepgram') say('Deepgram refuse la clé enregistrée dans Cloudflare (DEEPGRAM_API_KEY). Recolle le secret de la clé.');
+      else if (m === 'refuse') say("Le service refuse cette adresse. Ouvre l'appli depuis GitHub Pages ou Demarrer.bat.");
       else say('Le service Deepgram ne répond pas. Vérifie la connexion Internet, puis réessaie.');
     });
   }
