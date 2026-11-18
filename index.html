@@ -107,11 +107,13 @@ h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: upperca
   border: 1px solid var(--line); font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere;
 }
 #bookHint { color: var(--accent); }
-#bookHint:empty { display: none; }
+#bookHint:empty, #autoNote:empty { display: none; }
+#autoNote { color: var(--good); }
 #heard em { color: var(--muted); font-style: italic; }
 #heard:empty::before { content: "Rien pour l'instant."; color: var(--muted); }
 #nextUp { margin: 10px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
 #nextUp b { color: var(--ink); font-weight: 600; }
+section > label.check + label.check { margin-top: 10px; }
 label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; }
 label.check input { width: 18px; height: 18px; accent-color: var(--accent); }
 #history { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -173,6 +175,7 @@ body.proj #panel { display: none; }
     <h2>Ce que l'appli entend</h2>
     <div id="heard"></div>
     <p id="bookHint" class="note" aria-live="polite"></p>
+    <p id="autoNote" class="note" aria-live="polite"></p>
   </section>
 
   <section>
@@ -189,11 +192,13 @@ body.proj #panel { display: none; }
       <button id="prevBtn" class="btn" type="button">◀ Précédent</button>
       <button id="nextBtn" class="btn" type="button">Suivant ▶</button>
       <button id="blankBtn" class="btn" type="button" aria-pressed="false">Écran vide</button>
+      <button id="undoBtn" class="btn" type="button">Annuler le dernier</button>
     </div>
   </section>
 
   <section>
     <label class="check"><input id="auto" type="checkbox" checked> Passer seul au verset suivant pendant la lecture</label>
+    <label class="check"><input id="byText" type="checkbox" checked> Corriger et trouver le verset d'après le texte lu</label>
   </section>
 
   <section>
@@ -209,7 +214,7 @@ body.proj #panel { display: none; }
   </section>
 
   <section>
-    <p class="note"><kbd>←</kbd> <kbd>→</kbd> verset précédent ou suivant · <kbd>B</kbd> écran vide · <kbd>P</kbd> projection · <kbd>/</kbd> recherche</p>
+    <p class="note"><kbd>←</kbd> <kbd>→</kbd> verset précédent ou suivant · <kbd>B</kbd> écran vide · <kbd>Retour arrière</kbd> annuler le dernier · <kbd>P</kbd> projection · <kbd>/</kbd> recherche</p>
   </section>
 </aside>
 
@@ -472,7 +477,12 @@ body.proj #panel { display: none; }
           if (!(nx && (nx.t === ':' || VS[nx.t]))) return null;
         }
         c = cn.v; k = cn.next;
-        if (single && !sawChap && !(T[k] && T[k].t === ':')) { v = c; c = 1; }
+        if (single && !sawChap && !(T[k] && T[k].t === ':')) {
+          // « Philémon 1 verset 2 » : le 1 est le chapitre ; « Philémon 6 » : le 6 est le verset
+          var mm = k, gg = 0;
+          while (T[mm] && MID[T[mm].t] && gg < 4) { mm++; gg++; }
+          if (!(c === 1 && T[mm] && VS[T[mm].t])) { v = c; c = 1; }
+        }
       }
       if (v === null) {
         var k2 = k, sep = false;
@@ -563,10 +573,12 @@ body.proj #panel { display: none; }
     }
 
     /* Mots utiles pour comparer la lecture au texte (les mots d'une lettre sont ignorés). */
-    function words(s) {
-      var out = [], re = /[\p{L}\d]+/gu, m;
-      while ((m = re.exec(s))) { var w = norm(m[0]); if (w.length > 1 || /\d/.test(w)) out.push(w); }
-      return out;
+    function words(s) { return wordsPos(s).w; }
+    /* Mêmes mots que words(), avec la position de chacun dans le texte. */
+    function wordsPos(s) {
+      var out = [], pos = [], re = /[\p{L}\d]+/gu, m;
+      while ((m = re.exec(s))) { var w = norm(m[0]); if (w.length > 1 || /\d/.test(w)) { out.push(w); pos.push(m.index); } }
+      return { w: out, p: pos };
     }
 
     function lev(a, b) {
@@ -637,8 +649,87 @@ body.proj #panel { display: none; }
       return advanced;
     };
 
+    /* ---------- Reconnaissance d'après le texte lu ----------
+       Chaque verset est découpé en groupes de 3 mots consécutifs (trigrammes).
+       Les mots entendus sont comparés à ces groupes : le verset qui en partage le plus est celui qu'on lit. */
+    var IDX = null, VB, VC, VV, VID = {};
+    function h32(str) {
+      var x = 0x811c9dc5;
+      for (var i = 0; i < str.length; i++) { x ^= str.charCodeAt(i); x = Math.imul(x, 0x01000193) >>> 0; }
+      return x >>> 0;
+    }
+    function buildIndex() {
+      if (IDX) return;
+      var n = 0, b, c, v;
+      for (b = 0; b < BIBLE.length; b++) for (c = 0; c < BIBLE[b].length; c++) n += BIBLE[b][c].length;
+      VB = new Uint8Array(n); VC = new Uint8Array(n); VV = new Uint8Array(n);
+      var hs = [], ids = [], k = 0;
+      for (b = 0; b < BIBLE.length; b++) for (c = 0; c < BIBLE[b].length; c++) for (v = 0; v < BIBLE[b][c].length; v++) {
+        VB[k] = b; VC[k] = c + 1; VV[k] = v + 1; VID[b + ':' + (c + 1) + ':' + (v + 1)] = k;
+        var w = words(BIBLE[b][c][v]);
+        for (var j = 0; j + 2 < w.length; j++) { hs.push(h32(w[j] + ' ' + w[j + 1] + ' ' + w[j + 2])); ids.push(k); }
+        k++;
+      }
+      // tri des paires (trigramme, verset) pour une recherche par dichotomie
+      var order = new Uint32Array(hs.length);
+      for (var i = 0; i < order.length; i++) order[i] = i;
+      var H = Uint32Array.from(hs);
+      order.sort(function (a, b2) { return H[a] - H[b2] || ids[a] - ids[b2]; });
+      var SH = new Uint32Array(order.length), SI = new Uint32Array(order.length);
+      for (i = 0; i < order.length; i++) { SH[i] = H[order[i]]; SI[i] = ids[order[i]]; }
+      IDX = { h: SH, id: SI };
+    }
+    function lower(hv) {
+      var lo = 0, hi = IDX.h.length;
+      while (lo < hi) { var mid = (lo + hi) >>> 1; if (IDX.h[mid] < hv) lo = mid + 1; else hi = mid; }
+      return lo;
+    }
+    /* spoken : mots entendus (déjà normalisés). ctx : verset affiché, pour départager.
+       minHits : nombre de groupes de 3 mots en commun exigé. Renvoie { b, c, v, hits, at } ou null.
+       at = indice du premier mot entendu qui correspond au verset trouvé. */
+    function textMatch(spoken, ctx, minHits) {
+      buildIndex();
+      if (spoken.length < 3) return null;
+      var score = {}, first = {}, seen = {};
+      for (var j = 0; j + 2 < spoken.length; j++) {
+        var hv = h32(spoken[j] + ' ' + spoken[j + 1] + ' ' + spoken[j + 2]);
+        var a = lower(hv), e = a;
+        while (e < IDX.h.length && IDX.h[e] === hv) e++;
+        if (e === a || e - a > 40) continue;                       // groupe absent ou trop courant
+        for (var q = a; q < e; q++) {
+          var id = IDX.id[q], sk = id + ':' + hv;
+          if (seen[sk]) continue;                                   // un même groupe ne compte qu'une fois
+          seen[sk] = 1;
+          score[id] = (score[id] || 0) + 1;
+          if (first[id] == null) first[id] = j;
+        }
+      }
+      var best = -1, bs = 0, second = 0, tied = [];
+      for (var key2 in score) {
+        var sc = score[key2];
+        if (sc > bs) { second = bs; bs = sc; best = +key2; tied = [+key2]; }
+        else if (sc === bs) { tied.push(+key2); }
+        else if (sc > second) second = sc;
+      }
+      if (best < 0 || bs < minHits) return null;
+      if (tied.length > 1) {                                        // même texte à plusieurs endroits
+        if (!ctx) return null;
+        var near = tied.filter(function (id2) { return VB[id2] === ctx.b && VC[id2] === ctx.c; });
+        if (near.length !== 1) return null;
+        best = near[0];
+      } else if (bs - second < 2) {
+        // avance trop faible : on n'accepte que dans le chapitre affiché
+        if (!ctx || VB[best] !== ctx.b || VC[best] !== ctx.c) return null;
+      }
+      if (ctx) {                                                    // le verset affiché fait aussi bien : on le garde
+        var cur = VID[ctx.b + ':' + ctx.c + ':' + ctx.v];
+        if (cur != null && cur !== best && (score[cur] || 0) >= bs) return null;
+      }
+      return { b: VB[best], c: VC[best], v: VV[best], hits: bs, at: first[best] };
+    }
+
     return { findRefs: findRefs, text: text, label: label, key: key, next: next, prev: prev,
-      words: words, Follower: Follower, names: NAMES };
+      words: words, wordsPos: wordsPos, Follower: Follower, names: NAMES, textMatch: textMatch, buildIndex: buildIndex };
   }
 
   var api = { create: create, norm: norm };
@@ -768,14 +859,47 @@ body.proj #panel { display: none; }
     var pb = core.findRefs.pendingBook;
     $('bookHint').textContent = pb == null ? '' :
       'Livre reconnu : ' + core.names[pb] + '. ' + (BIBLE[pb].length === 1 ? 'Dites le verset pour l\'afficher.' : 'Dites le chapitre et le verset pour l\'afficher.');
+    var base = st.last ? Math.max(0, st.last.end) : 0;
+    var wp = core.wordsPos(full.slice(base));
     if (st.cur && st.last && $('auto').checked) {
-      var adv = follower.feed(core.words(full.slice(Math.max(0, st.last.end))));
+      var adv = follower.feed(wp.w);
       if (adv) display(adv);
       setProgress(follower.V.length ? follower.pointer / follower.V.length : 0);
       markRead(follower.pointer);
     }
+    if ($('byText').checked && indexReady) byText(full, base, wp);
     renderHeard();
   }
+  /* Le pasteur lit un autre verset que celui affiché (référence mal entendue), ou lit sans donner la référence :
+     on retrouve le verset d'après les mots lus. */
+  var indexReady = false, autoTimer = null;
+  var byTextBusy = false;
+  function byText(full, base, wp) {
+    if (byTextBusy) return;
+    var from = st.cur ? follower.consumed : 0;                  // mots lus depuis le début du verset affiché
+    var lo = Math.max(from, wp.w.length - 16);
+    var win = wp.w.slice(lo);
+    if (win.length < 6) return;
+    var m = core.textMatch(win, st.cur, st.cur ? 4 : 5);        // plus exigeant quand rien n'est affiché
+    if (!m || (st.cur && core.key(m) === core.key(st.cur))) return;
+    var at = base + wp.p[lo + m.at];
+    var was = st.cur ? core.label(st.cur) : null;
+    jump(m, at, at);
+    st.prevFinalLen = st.finalText.length;
+    byTextBusy = true;
+    try { process(); } finally { byTextBusy = false; }           // le suivi reprend sur les mots déjà lus
+    $('autoNote').textContent = was ? 'Corrigé d\'après la lecture : ' + core.label(m) + ' (au lieu de ' + was + ').'
+                                    : 'Verset trouvé d\'après la lecture : ' + core.label(m) + '.';
+    clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 8000);
+  }
+  function undo() {
+    if (st.history.length < 2) return;
+    var back = st.history[1];
+    manual(back);
+    $('autoNote').textContent = 'Retour à ' + core.label(back) + '.';
+    clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 5000);
+  }
+
   function appendFinal(t) { t = (t || '').trim(); if (t) st.finalText += (st.finalText ? ' ' : '') + t; }
 
   /* ---------- Écoute ---------- */
@@ -1020,6 +1144,7 @@ body.proj #panel { display: none; }
   $('prevBtn').addEventListener('click', function () { if (st.cur) manual(core.prev(st.cur)); });
   $('nextBtn').addEventListener('click', function () { if (st.cur) manual(core.next(st.cur)); });
   $('blankBtn').addEventListener('click', toggleBlank);
+  $('undoBtn').addEventListener('click', undo);
   $('projBtn').addEventListener('click', function () { setProj(true); });
   $('exitProj').addEventListener('click', function () { setProj(false); });
   document.addEventListener('fullscreenchange', function () {
@@ -1046,6 +1171,7 @@ body.proj #panel { display: none; }
   });
   $('dgClear').addEventListener('click', function () { try { localStorage.removeItem('vd-code'); } catch (e) {} engineNote(); });
   $('auto').addEventListener('change', function () { store('vd-auto', $('auto').checked ? '1' : '0'); });
+  $('byText').addEventListener('change', function () { store('vd-bytext', $('byText').checked ? '1' : '0'); });
   $('lang').addEventListener('change', function () { store('vd-lang', $('lang').value); });
   document.addEventListener('keydown', function (ev) {
     var tag = (ev.target && ev.target.tagName) || '';
@@ -1053,6 +1179,7 @@ body.proj #panel { display: none; }
     if (ev.key === 'ArrowRight') { if (st.cur) manual(core.next(st.cur)); ev.preventDefault(); }
     else if (ev.key === 'ArrowLeft') { if (st.cur) manual(core.prev(st.cur)); ev.preventDefault(); }
     else if (ev.key === 'b' || ev.key === 'B') toggleBlank();
+    else if (ev.key === 'Backspace') { undo(); ev.preventDefault(); }
     else if (ev.key === 'p' || ev.key === 'P') setProj(!document.body.classList.contains('proj'));
     else if (ev.key === 'Escape' && document.body.classList.contains('proj') && !document.fullscreenElement) setProj(false);
     else if (ev.key === '/') { $('goto').focus(); ev.preventDefault(); }
@@ -1061,6 +1188,9 @@ body.proj #panel { display: none; }
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
 
   if (store('vd-auto') === '0') $('auto').checked = false;
+  if (store('vd-bytext') === '0') $('byText').checked = false;
+  // index du texte construit juste après l'affichage, pour ne pas retarder l'ouverture
+  setTimeout(function () { try { core.buildIndex(); indexReady = true; } catch (e) {} }, 300);
   if (store('vd-lang')) $('lang').value = store('vd-lang');
   render(); engineNote();
   if (inArtifact) {
