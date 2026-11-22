@@ -758,7 +758,7 @@ body.proj #panel { display: none; }
       .split(' ').forEach(function (w) { STOP[w] = 1; });
     function stem(w) {
       if (w.length > 5) w = w.replace(/(ements?|ations?|issements?)$/, '');
-      if (w.length > 4) w = w.replace(/(aient|erent|ions|iez|ent|ait|ais|ant|ee|ees|es|er|ez|e|s|x)$/, '');
+      if (w.length > 4) w = w.replace(/(aient|erent|ions|iez|ent|ait|ais|ant|ee|ees|es|er|ez|e|s|x|t)$/, '');   // « concourt » et « concourent » → « concour »
       return w;
     }
     // mots d'aujourd'hui → mots de la Louis Segond 1910 (« je peux » se dit « je puis », « l'amour » « la charité »)
@@ -1006,14 +1006,16 @@ body.proj #panel { display: none; }
     });
   }
   function setSugg(items, note) {
-    var seen = {}, out = [];
+    var seen = {}, out = [], onScreen = false;
     items.forEach(function (it) {
       var k = core.key(it.ref);
-      if (seen[k] || (st.cur && k === core.key(st.cur))) return;
+      if (st.cur && k === core.key(st.cur)) { onScreen = true; return; }   // déjà projeté : on le signale au lieu de le proposer
+      if (seen[k]) return;
       seen[k] = 1; out.push(it);
     });
     sg.list = out.slice(0, 4); renderSugg();
-    $('suggNote').textContent = note || '';
+    var already = onScreen ? core.label(st.cur) + ' est déjà à l\'écran.' : '';
+    $('suggNote').textContent = [already, note || ''].filter(Boolean).join(' ');
     clearTimeout(sg.expire);
     if (sg.list.length) sg.expire = setTimeout(function () { sg.list = []; renderSugg(); $('suggNote').textContent = ''; }, 90000);
   }
