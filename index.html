@@ -1012,7 +1012,7 @@ body.proj #panel { display: none; }
   var sg = { list: [], seenCount: 0, cueTimer: null, lastAi: 0, aiCount: 0, expire: null, busy: false };
   var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible|l histoire de|le recit de|le passage ou|la parabole)/;
   function plain(t) { return VersetCore.norm(t).replace(/[^a-z0-9]+/g, ' '); }
-  function recentWords(n) { var w = core.words(st.finalText); return w.slice(Math.max(0, w.length - n)); }
+  function recentWords(n) { var w = core.words(fullText()); return w.slice(Math.max(0, w.length - n)); }
   function renderSugg() {
     var box = $('sugg'); box.innerHTML = '';
     sg.list.forEach(function (it, i) {
@@ -1078,7 +1078,12 @@ body.proj #panel { display: none; }
   function search(manualAsk) {
     if (sg.busy) return;
     var words = recentWords(manualAsk ? 60 : 45);
-    if (words.length < 4) { if (manualAsk) $('suggNote').textContent = "Pas encore assez de paroles entendues."; return; }
+    if (words.length < (manualAsk ? 2 : 4)) {           // sur demande, « l'histoire de Zachée » suffit
+      if (manualAsk) $('suggNote').textContent = !st.listening && !st.demo
+        ? "Démarre d'abord l'écoute, puis dis la phrase avant de cliquer."
+        : "Pas encore assez de paroles entendues : dis au moins une phrase, puis clique.";
+      return;
+    }
     var local = localCandidates(words, true);
     var canAi = !!(aiUrl() && dgKey() && !inArtifact);   // Claude Sonnet côté service (secours : Workers AI)
     var now = Date.now();
@@ -1092,7 +1097,7 @@ body.proj #panel { display: none; }
     if (local.length) setSugg(local, 'Recherche IA en cours…');
     var texte = words.join(' ');
     fetch(aiUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-                     body: JSON.stringify({ code: dgKey(), texte: st.finalText.slice(-700) || texte }) })
+                     body: JSON.stringify({ code: dgKey(), texte: fullText().slice(-700) || texte }) })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { r: r, d: d }; }); })
       .then(function (res) {
         var d = res.d || {}, ai = [];
