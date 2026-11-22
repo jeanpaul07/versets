@@ -759,11 +759,13 @@ body.proj #panel { display: none; }
      'ainsi cela ceci celui celle ceux voici voila tres fait faire va vont aller oui non amen frere freres soeur soeurs eglise ' +
      'aujourd hui bible verset versets chapitre ecrit parole quelque part dire disant fois ici la-bas apres avant toujours encore ' +
      'veux veut voulons voulez veulent parler parle parlons parlez partie parties histoire histoires cherche chercher cherchons ' +
-     'passage passages quel quelle quels quelles endroit souviens rappelle rappelez souvenez connaissez exemple')
+     'passage passages quel quelle quels quelles endroit souviens rappelle rappelez souvenez connaissez exemple ' +
+     'bonjour bonsoir merci svp ok okay euh hein bon ben voila vais avouer apres')
       .split(' ').forEach(function (w) { STOP[w] = 1; });
     function stem(w) {
       if (w.length > 5) w = w.replace(/(ements?|ations?|issements?)$/, '');
-      if (w.length > 4) w = w.replace(/(aient|erent|ions|iez|ent|ait|ais|ant|ee|ees|es|er|ez|e|s|x|t)$/, '');   // « concourt » et « concourent » → « concour »
+      if (w.length > 4) w = w.replace(/rt$/, 'r');                    // « concourt » → « concour », comme « concourent »
+      if (w.length > 4) w = w.replace(/(aient|erent|ions|iez|ent|ait|ais|ant|ee|ees|es|er|ez|e|s|x)$/, '');
       return w;
     }
     // mots d'aujourd'hui → mots de la Louis Segond 1910 (« je peux » se dit « je puis », « l'amour » « la charité »)
@@ -802,7 +804,9 @@ body.proj #panel { display: none; }
           if (t.length >= 2 && !q[t] && KW.post.has(t)) { q[t] = 1; terms.push(t); }
         });
       });
-      if (terms.length < 3) return [];
+      // au moins 3 mots utiles… ou un seul mot très rare, comme un nom (« Zachée » n'apparaît que dans 3 versets)
+      var rare = terms.some(function (t) { return KW.post.get(t).length / 2 <= 12; });
+      if (terms.length < 3 && !rare) return [];
       var acc = KW.acc, hit = KW.hit, touched = [], k1 = 1.2, bb = 0.75;
       for (var i = 0; i < terms.length; i++) {
         var p = KW.post.get(terms[i]), df = p.length / 2;
@@ -1059,7 +1063,7 @@ body.proj #panel { display: none; }
       return [{ ref: top, src: 'mots' }];
     }
     var best = r[0].score;
-    return r.filter(function (x) { return x.score >= 10 && x.terms >= 2 && x.score >= best * 0.5; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
+    return r.filter(function (x) { return x.score >= 8.5 && (x.terms >= 2 || x.own >= 8.5) && x.score >= best * 0.5; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
   }
   function onNewPhrase() {
     var words = recentWords(30);
@@ -1078,7 +1082,7 @@ body.proj #panel { display: none; }
   function search(manualAsk) {
     if (sg.busy) return;
     var words = recentWords(manualAsk ? 60 : 45);
-    if (words.length < (manualAsk ? 2 : 4)) {           // sur demande, « l'histoire de Zachée » suffit
+    if (words.length < (manualAsk ? 2 : 3)) {           // sur demande, « l'histoire de Zachée » suffit
       if (manualAsk) $('suggNote').textContent = !st.listening && !st.demo
         ? "Démarre d'abord l'écoute, puis dis la phrase avant de cliquer."
         : "Pas encore assez de paroles entendues : dis au moins une phrase, puis clique.";
