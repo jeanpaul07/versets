@@ -120,7 +120,7 @@ h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: upperca
 .sg span { font-size: 13px; line-height: 1.4; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 #aiBtn { width: 100%; }
 #aiBtn[disabled] { opacity: .6; cursor: progress; }
-#suggNote:empty { display: none; }
+#suggNote:empty, #aiState:empty { display: none; }
 #heard em { color: var(--muted); font-style: italic; }
 #heard:empty::before { content: "Rien pour l'instant."; color: var(--muted); }
 #nextUp { margin: 10px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
@@ -218,6 +218,9 @@ body.proj #panel { display: none; }
   <section>
     <label class="check"><input id="auto" type="checkbox" checked> Passer seul au verset suivant pendant la lecture</label>
     <label class="check"><input id="byText" type="checkbox" checked> Corriger et trouver le verset d'après le texte lu</label>
+    <label class="check"><input id="aiLive" type="checkbox" checked> IA à l'écoute en continu (Claude)</label>
+    <label class="check"><input id="aiAuto" type="checkbox" checked> Afficher d'office quand l'IA est sûre (90 % et plus)</label>
+    <p id="aiState" class="note"></p>
   </section>
 
   <section>
@@ -754,7 +757,9 @@ body.proj #panel { display: none; }
      'se s sa son ses mon ma mes ton ta tes il elle ils elles nous vous je j tu me m te t lui leur leurs y est sont etait ete etre ' +
      'avoir ai as avons avez ont fut car mais ou donc or ni comme si on dit dis disait point lorsque quand aussi meme bien alors ' +
      'ainsi cela ceci celui celle ceux voici voila tres fait faire va vont aller oui non amen frere freres soeur soeurs eglise ' +
-     'aujourd hui bible verset versets chapitre ecrit parole quelque part dire disant fois ici la-bas apres avant toujours encore')
+     'aujourd hui bible verset versets chapitre ecrit parole quelque part dire disant fois ici la-bas apres avant toujours encore ' +
+     'veux veut voulons voulez veulent parler parle parlons parlez partie parties histoire histoires cherche chercher cherchons ' +
+     'passage passages quel quelle quels quelles endroit souviens rappelle rappelez souvenez connaissez exemple')
       .split(' ').forEach(function (w) { STOP[w] = 1; });
     function stem(w) {
       if (w.length > 5) w = w.replace(/(ements?|ations?|issements?)$/, '');
@@ -810,11 +815,26 @@ body.proj #panel { display: none; }
           acc[id] += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - bb + bb * KW.len[id] / KW.avg));
         }
       }
-      touched.sort(function (a, b2) { return acc[b2] - acc[a]; });
-      var out = [];
+      // Un récit s'étale sur plusieurs versets (« Zachée » au v. 2, « sycomore » au v. 4) :
+      // chaque verset reçoit aussi une part du score de ses voisins du même chapitre.
+      function same(a, b2) { return b2 >= 0 && b2 < KW.n && VB[a] === VB[b2] && VC[a] === VC[b2]; }
+      var wsc = {}, wterms = {};
+      touched.forEach(function (id) {
+        var sc = acc[id], tm = hit[id];
+        for (var d = -2; d <= 2; d++) {
+          if (!d) continue;
+          var nb = id + d;
+          if (same(id, nb) && acc[nb]) { sc += acc[nb] * (Math.abs(d) === 1 ? 0.5 : 0.25); tm += hit[nb] ? 1 : 0; }
+        }
+        wsc[id] = sc; wterms[id] = Math.max(hit[id], Math.min(tm, hit[id] + 2));
+      });
+      touched.sort(function (a, b2) { return wsc[b2] - wsc[a] || acc[b2] - acc[a]; });
+      var out = [], usedPassage = {};
       for (i = 0; i < touched.length && out.length < limit; i++) {
-        var id2 = touched[i];
-        out.push({ b: VB[id2], c: VC[id2], v: VV[id2], score: acc[id2], terms: hit[id2] });
+        var id2 = touched[i], pk = VB[id2] + ':' + VC[id2] + ':' + Math.floor((VV[id2] - 1) / 3);
+        if (usedPassage[pk] && acc[id2] < wsc[id2] * 0.9) continue;   // un seul verset par passage, sauf citation propre
+        usedPassage[pk] = 1;
+        out.push({ b: VB[id2], c: VC[id2], v: VV[id2], score: wsc[id2], own: acc[id2], terms: wterms[id2] });
       }
       for (i = 0; i < touched.length; i++) { acc[touched[i]] = 0; hit[touched[i]] = 0; }
       return out;
@@ -935,6 +955,7 @@ body.proj #panel { display: none; }
       } else { st.last.start = Math.max(0, st.last.start - cut); st.last.end -= cut; }
     }
     st.finalText = st.finalText.slice(cut);
+    if (typeof ai !== 'undefined') ai.pos = Math.max(0, ai.pos - cut);
     st.prevFinalLen = Math.max(0, st.prevFinalLen - cut);
   }
   function process() {
@@ -1025,11 +1046,12 @@ body.proj #panel { display: none; }
     sg.list = []; renderSugg(); $('suggNote').textContent = '';
   }
   function localCandidates(words, loose) {
-    var r = core.keywordSearch(words, 4);
+    var r = core.keywordSearch(words, loose ? 4 : 8);
     if (!r.length) return [];
-    if (!loose) {                                   // en continu : seulement une correspondance nette
-      var top = r[0], second = r[1] ? r[1].score : 0;
-      if (top.score < 17 || top.terms < 3 || top.score < second * 1.5) return [];   // nettement au-dessus des autres
+    if (!loose) {                                   // en continu : seulement une citation nette d'un verset précis
+      var byOwn = r.slice().sort(function (a, b2) { return b2.own - a.own; });
+      var top = byOwn[0], second = byOwn[1] ? byOwn[1].own : 0;
+      if (top.own < 17 || top.terms < 3 || top.own < second * 1.5) return [];   // nettement au-dessus des autres
       return [{ ref: top, src: 'mots' }];
     }
     return r.filter(function (x) { return x.score >= 10 && x.terms >= 2; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
@@ -1040,6 +1062,8 @@ body.proj #panel { display: none; }
     if (strong.length) setSugg(strong.concat(sg.list));
     // « la Bible dit… », « il est écrit… » : on attend la suite de la phrase, puis on cherche
     var last = plain(st.finalText.slice(-160));
+    scheduleAnalyse(CUE.test(last));
+    if (aiLiveActive()) return;
     if (CUE.test(last) && !sg.cueTimer && st.listening) {
       sg.cueTimer = setTimeout(function () { sg.cueTimer = null; search(false); }, 7000);
     }
@@ -1050,7 +1074,7 @@ body.proj #panel { display: none; }
     var words = recentWords(manualAsk ? 60 : 45);
     if (words.length < 4) { if (manualAsk) $('suggNote').textContent = "Pas encore assez de paroles entendues."; return; }
     var local = localCandidates(words, true);
-    var canAi = !!(aiUrl() && dgKey() && !inArtifact);
+    var canAi = !!(aiUrl() && dgKey() && !inArtifact);   // Claude Sonnet côté service (secours : Workers AI)
     var now = Date.now();
     if (!canAi || (!manualAsk && (now - sg.lastAi < 15000 || sg.aiCount >= 60))) {
       setSugg(local, local.length ? '' : (manualAsk ? 'Aucun verset trouvé avec ces mots.' : ''));
@@ -1076,14 +1100,89 @@ body.proj #panel { display: none; }
         else if (d.erreur === 'code') note = "Code d'accès refusé.";
         else if (d.erreur) note = "La recherche IA n'a pas répondu. La recherche par mots continue.";
         else if (!ai.length && !local.length) note = manualAsk ? 'Aucun verset précis trouvé dans ces paroles.' : '';
+        else if (!ai.length && manualAsk) note = "L'IA n'a pas reconnu de verset précis. Propositions trouvées par les mots :";
         setSugg(ai.concat(local), note);
       })
       .catch(function () { setSugg(local, "La recherche IA ne répond pas. Vérifie la connexion Internet."); })
       .then(function () { sg.busy = false; $('aiBtn').disabled = false; $('aiBtn').textContent = 'Chercher le verset dont il parle'; });
   }
 
+  /* ---------- IA à l'écoute en continu (Claude Haiku via le service Cloudflare) ---------- */
+  var ai = { pos: 0, timer: null, last: 0, inflight: false, pending: false, calls: 0, off: '', refused: {}, shown: {}, autoKey: null };
+  var AUTO_TYPES = { reference: 1, lecture: 1, citation: 1, paraphrase: 1 };
+  function svc(path) { return DG_SERVICE ? DG_SERVICE.replace(/\/+$/, '') + path : ''; }
+  function aiLiveActive() { return $('aiLive').checked && !ai.off && !!(DG_SERVICE && dgKey() && !inArtifact); }
+  function aiStatus() {
+    var el = $('aiState');
+    if (!$('aiLive').checked) { el.textContent = ''; return; }
+    if (inArtifact || !DG_SERVICE) { el.textContent = "IA : disponible seulement dans l'appli ouverte hors de Claude."; return; }
+    if (!dgKey()) { el.textContent = "IA : entre le code d'accès pour l'activer."; return; }
+    if (ai.off) { el.textContent = 'IA : ' + ai.off; return; }
+    el.textContent = st.listening ? 'IA : à l\'écoute · ' + ai.calls + ' analyse' + (ai.calls > 1 ? 's' : '') : "IA : prête, démarre l'écoute.";
+  }
+  function scheduleAnalyse(urgent) {
+    if (!aiLiveActive() || !st.listening) return;
+    clearTimeout(ai.timer);
+    var wait = Math.max(urgent ? 600 : 1500, 4000 - (Date.now() - ai.last));
+    ai.timer = setTimeout(runAnalyse, wait);
+  }
+  function runAnalyse() {
+    if (!aiLiveActive() || !st.listening) return;
+    if (ai.inflight) { ai.pending = true; return; }
+    if (ai.calls >= 1500) { ai.off = 'limite de la séance atteinte (1500 analyses). Recharge la page pour reprendre.'; aiStatus(); return; }
+    var nouveau = st.finalText.slice(ai.pos).trim();
+    if (core.words(nouveau).length < 5) return;
+    var contexte = st.finalText.slice(Math.max(0, ai.pos - 1200), ai.pos);
+    var endPos = st.finalText.length;
+    ai.inflight = true; ai.last = Date.now(); ai.calls++; aiStatus();
+    fetch(svc('/analyse'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ code: dgKey(), contexte: contexte, nouveau: nouveau.slice(-800),
+                             affiche: st.cur ? core.label(st.cur) : '', recents: st.history.slice(0, 6).map(core.label) }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) { ai.pos = Math.min(endPos, st.finalText.length); onAnalyse(d || {}); })
+      .catch(function () { /* coupure passagère : on réessaiera à la phrase suivante */ })
+      .then(function () {
+        ai.inflight = false; aiStatus();
+        if (ai.pending) { ai.pending = false; scheduleAnalyse(false); }
+      });
+  }
+  function parseRef(str) { var f = core.findRefs(String(str || ''), null, { abbr: true }); return f.length ? f[0] : null; }
+  function onAnalyse(d) {
+    var stop = { 'ia-cle-absente': "clé Anthropic absente dans Cloudflare (secret ANTHROPIC_API_KEY).",
+                 'ia-cle': 'clé Anthropic refusée. Vérifie le secret ANTHROPIC_API_KEY dans Cloudflare.',
+                 'ia-credit': 'crédit Anthropic épuisé. Ajoute du crédit sur console.anthropic.com.',
+                 'ia-modele': "modèle Claude indisponible pour ce compte.",
+                 'code': "code d'accès refusé." };
+    if (d.erreur) { if (stop[d.erreur]) { ai.off = stop[d.erreur]; aiStatus(); } return; }
+    var now = Date.now(), items = [];
+    var v = d.verset ? parseRef(d.verset) : null, conf = +d.confiance || 0;
+    if (v && !(st.cur && core.key(v) === core.key(st.cur))) {
+      var k = core.key(v);
+      var refused = ai.refused[k] && now - ai.refused[k] < 180000;
+      var again = ai.shown[k] && now - ai.shown[k] < 20000;
+      if ($('aiAuto').checked && conf >= 90 && AUTO_TYPES[d.type] && !refused && !again) {
+        ai.shown[k] = now; ai.autoKey = k;
+        manual(v);
+        $('autoNote').textContent = "Affiché par l'IA : " + core.label(v) + ' (' + conf + ' %). Retour arrière pour annuler.';
+        clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 9000);
+      } else if (conf >= 55 && !refused) {
+        items.push({ ref: v, src: 'IA ' + conf + ' %' });
+      }
+    }
+    (d.autres || []).forEach(function (o) { var r = parseRef(o); if (r) items.push({ ref: r, src: 'IA' }); });
+    if (items.length) setSugg(items.concat(sg.list));
+  }
+
   function undo() {
-    if (st.history.length < 2) return;
+    if (st.cur && ai.autoKey === core.key(st.cur)) { ai.refused[ai.autoKey] = Date.now(); ai.autoKey = null; }
+    if (st.history.length < 2) {                     // premier verset de la séance : on vide l'écran
+      if (!st.cur) return;
+      st.history.shift(); st.cur = null; st.last = null; follower.ref = null; setProgress(0);
+      render(); renderHistory();
+      $('autoNote').textContent = 'Affichage annulé.';
+      clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 5000);
+      return;
+    }
     var back = st.history[1];
     manual(back);
     $('autoNote').textContent = 'Retour à ' + core.label(back) + '.';
@@ -1096,6 +1195,7 @@ body.proj #panel { display: none; }
   function say(m) { $('msg').textContent = m || ''; }
   function setListening(on) {
     st.listening = on;
+    if (typeof ai !== 'undefined') { if (on) ai.pos = st.finalText.length; setTimeout(aiStatus, 0); }
     $('status').textContent = on ? 'Écoute en cours' : "À l'arrêt";
     $('status').classList.toggle('on', on);
     $('listenBtn').textContent = on ? "Arrêter l'écoute" : "Démarrer l'écoute";
@@ -1190,7 +1290,11 @@ body.proj #panel { display: none; }
   function dgTerms() {
     var seen = {}, out = [];
     core.names.forEach(function (n) { n = n.replace(/^\d\s+/, ''); if (!seen[n]) { seen[n] = 1; out.push(n); } });
-    return out.concat(['chapitre', 'verset']);
+    // personnages et lieux souvent cités : Deepgram les reconnaît mieux s'ils sont fournis d'avance (100 termes au plus)
+    var NOMS = ['Zachée', 'Goliath', 'Nicodème', 'Lazare', 'Abraham', 'Moïse', 'Élie', 'Élisée', 'Gédéon', 'Samson',
+      'Booz', 'Jéricho', 'Bethléem', 'Nazareth', 'Golgotha', 'Gethsémané', 'Pilate', 'Barabbas', 'Marthe', 'Bartimée',
+      'Jaïrus', 'Samaritaine', 'Pharisiens', 'Publicain', 'Pentecôte', 'Isaac', 'Jacob', 'Joseph', 'Salomon', 'Absalom'];
+    return out.concat(['chapitre', 'verset']).concat(NOMS).slice(0, 100);
   }
   function dgStopAudio() {
     if (dg.mr) { try { if (dg.mr.state !== 'inactive') dg.mr.stop(); } catch (e) {} dg.mr = null; }
@@ -1359,10 +1463,13 @@ body.proj #panel { display: none; }
     store('vd-code', v); $('dgKey').value = '';
     if (dgKey() !== v) say("Le code n'a pas pu être enregistré dans ce navigateur."); else say('');
     engineNote();
+    aiStatus();
   });
-  $('dgClear').addEventListener('click', function () { try { localStorage.removeItem('vd-code'); } catch (e) {} engineNote(); });
+  $('dgClear').addEventListener('click', function () { try { localStorage.removeItem('vd-code'); } catch (e) {} engineNote(); aiStatus(); });
   $('auto').addEventListener('change', function () { store('vd-auto', $('auto').checked ? '1' : '0'); });
   $('byText').addEventListener('change', function () { store('vd-bytext', $('byText').checked ? '1' : '0'); });
+  $('aiLive').addEventListener('change', function () { store('vd-ailive', $('aiLive').checked ? '1' : '0'); aiStatus(); });
+  $('aiAuto').addEventListener('change', function () { store('vd-aiauto', $('aiAuto').checked ? '1' : '0'); });
   $('lang').addEventListener('change', function () { store('vd-lang', $('lang').value); });
   document.addEventListener('keydown', function (ev) {
     var tag = (ev.target && ev.target.tagName) || '';
@@ -1381,6 +1488,9 @@ body.proj #panel { display: none; }
 
   if (store('vd-auto') === '0') $('auto').checked = false;
   if (store('vd-bytext') === '0') $('byText').checked = false;
+  if (store('vd-ailive') === '0') $('aiLive').checked = false;
+  if (store('vd-aiauto') === '0') $('aiAuto').checked = false;
+  setTimeout(aiStatus, 0);
   // index du texte construit juste après l'affichage, pour ne pas retarder l'ouverture
   setTimeout(function () {
     try { core.buildIndex(); indexReady = true; } catch (e) {}
