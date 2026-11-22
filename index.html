@@ -109,6 +109,18 @@ h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: upperca
 #bookHint { color: var(--accent); }
 #bookHint:empty, #autoNote:empty { display: none; }
 #autoNote { color: var(--good); }
+#sugg { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+#sugg:empty::before { content: "Quand le pasteur cite un verset de mémoire, les versets possibles s'affichent ici."; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.sg { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; text-align: left; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--card); cursor: pointer; width: 100%; }
+.sg:hover, .sg:focus-visible { border-color: var(--accent); }
+.sg kbd { grid-row: span 2; align-self: start; }
+.sg b { font-size: 14px; font-variant-numeric: tabular-nums; }
+.sg b small { font-weight: 600; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-left: 6px; }
+.sg span { font-size: 13px; line-height: 1.4; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#aiBtn { width: 100%; }
+#aiBtn[disabled] { opacity: .6; cursor: progress; }
+#suggNote:empty { display: none; }
 #heard em { color: var(--muted); font-style: italic; }
 #heard:empty::before { content: "Rien pour l'instant."; color: var(--muted); }
 #nextUp { margin: 10px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
@@ -178,6 +190,13 @@ body.proj #panel { display: none; }
     <p id="autoNote" class="note" aria-live="polite"></p>
   </section>
 
+  <section id="suggBox">
+    <h2>Versets possibles</h2>
+    <div id="sugg" aria-live="polite"></div>
+    <button id="aiBtn" class="btn" type="button">Chercher le verset dont il parle</button>
+    <p id="suggNote" class="note"></p>
+  </section>
+
   <section>
     <h2>Afficher un verset à la main</h2>
     <form id="gotoForm" class="field">
@@ -214,7 +233,7 @@ body.proj #panel { display: none; }
   </section>
 
   <section>
-    <p class="note"><kbd>←</kbd> <kbd>→</kbd> verset précédent ou suivant · <kbd>B</kbd> écran vide · <kbd>Retour arrière</kbd> annuler le dernier · <kbd>P</kbd> projection · <kbd>/</kbd> recherche</p>
+    <p class="note"><kbd>←</kbd> <kbd>→</kbd> verset précédent ou suivant · <kbd>1</kbd>–<kbd>4</kbd> verset possible · <kbd>B</kbd> écran vide · <kbd>Retour arrière</kbd> annuler le dernier · <kbd>P</kbd> projection · <kbd>/</kbd> recherche</p>
   </section>
 </aside>
 
@@ -728,7 +747,81 @@ body.proj #panel { display: none; }
       return { b: VB[best], c: VC[best], v: VV[best], hits: bs, at: first[best] };
     }
 
+    /* ---------- Recherche par mots-clés (verset cité de mémoire, avec d'autres mots) ----------
+       Score BM25 : un mot rare (« fortifie ») compte beaucoup, un mot courant (« Dieu ») peu. */
+    var STOP = {};
+    ('le la les l de des du d un une et a au aux en dans que qu qui quoi ne n pas plus pour par sur avec ce c cet cette ces ' +
+     'se s sa son ses mon ma mes ton ta tes il elle ils elles nous vous je j tu me m te t lui leur leurs y est sont etait ete etre ' +
+     'avoir ai as avons avez ont fut car mais ou donc or ni comme si on dit dis disait point lorsque quand aussi meme bien alors ' +
+     'ainsi cela ceci celui celle ceux voici voila tres fait faire va vont aller oui non amen frere freres soeur soeurs eglise ' +
+     'aujourd hui bible verset versets chapitre ecrit parole quelque part dire disant fois ici la-bas apres avant toujours encore')
+      .split(' ').forEach(function (w) { STOP[w] = 1; });
+    function stem(w) {
+      if (w.length > 5) w = w.replace(/(ements?|ations?|issements?)$/, '');
+      if (w.length > 4) w = w.replace(/(aient|erent|ions|iez|ent|ait|ais|ant|ee|ees|es|er|ez|e|s|x)$/, '');
+      return w;
+    }
+    // mots d'aujourd'hui → mots de la Louis Segond 1910 (« je peux » se dit « je puis », « l'amour » « la charité »)
+    var MODERNE = { peux: ['puis'], peut: ['puis'], amour: ['charite'], aime: ['charite'], tellement: ['tant'],
+      pardonne: ['pardonnez'], craignez: ['crains'], peur: ['crains', 'craignez'], inquiet: ['inquiets'], inquietez: ['inquietez'] };
+    var KW = null;
+    function buildKeywords() {
+      if (KW) return;
+      buildIndex();
+      var n = VB.length, post = new Map(), len = new Uint16Array(n), total = 0;
+      for (var id = 0; id < n; id++) {
+        var w = words(BIBLE[VB[id]][VC[id] - 1][VV[id] - 1]), seen = {};
+        len[id] = w.length; total += w.length;
+        for (var j = 0; j < w.length; j++) {
+          if (STOP[w[j]]) continue;
+          var t = stem(w[j]);
+          if (t.length < 2) continue;
+          if (seen[t]) { seen[t].tf++; continue; }
+          var arr = post.get(t);
+          if (!arr) { arr = []; post.set(t, arr); }
+          var e = { tf: 1 }; seen[t] = e;
+          arr.push(id, 0); e.arr = arr; e.at = arr.length - 1;
+        }
+        for (var tk in seen) seen[tk].arr[seen[tk].at] = seen[tk].tf;
+      }
+      KW = { post: post, len: len, avg: total / n, n: n, acc: new Float32Array(n), hit: new Uint8Array(n) };
+    }
+    /* spoken : mots entendus. Renvoie au plus `limit` versets : { b, c, v, score, terms }. */
+    function keywordSearch(spoken, limit) {
+      buildKeywords();
+      var q = {}, terms = [];
+      spoken.forEach(function (w) {
+        if (STOP[w]) return;
+        [w].concat(MODERNE[w] || []).forEach(function (w2) {
+          var t = stem(w2);
+          if (t.length >= 2 && !q[t] && KW.post.has(t)) { q[t] = 1; terms.push(t); }
+        });
+      });
+      if (terms.length < 3) return [];
+      var acc = KW.acc, hit = KW.hit, touched = [], k1 = 1.2, bb = 0.75;
+      for (var i = 0; i < terms.length; i++) {
+        var p = KW.post.get(terms[i]), df = p.length / 2;
+        if (df > 3000) continue;                                   // mot présent partout : sans valeur
+        var idf = Math.log(1 + (KW.n - df + 0.5) / (df + 0.5));
+        for (var x = 0; x < p.length; x += 2) {
+          var id = p[x], tf = p[x + 1];
+          if (!hit[id]) touched.push(id);
+          if (hit[id] < 255) hit[id]++;
+          acc[id] += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - bb + bb * KW.len[id] / KW.avg));
+        }
+      }
+      touched.sort(function (a, b2) { return acc[b2] - acc[a]; });
+      var out = [];
+      for (i = 0; i < touched.length && out.length < limit; i++) {
+        var id2 = touched[i];
+        out.push({ b: VB[id2], c: VC[id2], v: VV[id2], score: acc[id2], terms: hit[id2] });
+      }
+      for (i = 0; i < touched.length; i++) { acc[touched[i]] = 0; hit[touched[i]] = 0; }
+      return out;
+    }
+
     return { findRefs: findRefs, text: text, label: label, key: key, next: next, prev: prev,
+      keywordSearch: keywordSearch, buildKeywords: buildKeywords,
       words: words, wordsPos: wordsPos, Follower: Follower, names: NAMES, textMatch: textMatch, buildIndex: buildIndex };
   }
 
@@ -819,6 +912,7 @@ body.proj #panel { display: none; }
   function fullText() { return st.finalText + (st.interim ? ' ' + st.interim : ''); }
   /* Affiche un verset et repart de zéro pour le suivi (start/end = position de la référence dans le texte entendu). */
   function jump(ref, start, end) {
+    if (typeof sg !== 'undefined' && sg.list.length) { sg.list = sg.list.filter(function (it) { return core.key(it.ref) !== core.key(ref); }); renderSugg(); }
     st.last = { key: core.key(ref), start: start, end: end };
     follower.start(ref); setProgress(0); display(ref);
   }
@@ -868,6 +962,7 @@ body.proj #panel { display: none; }
       markRead(follower.pointer);
     }
     if ($('byText').checked && indexReady) byText(full, base, wp);
+    if (indexReady && st.finalCount !== sg.seenCount) { sg.seenCount = st.finalCount; onNewPhrase(); }
     renderHeard();
   }
   /* Le pasteur lit un autre verset que celui affiché (référence mal entendue), ou lit sans donner la référence :
@@ -892,6 +987,99 @@ body.proj #panel { display: none; }
                                     : 'Verset trouvé d\'après la lecture : ' + core.label(m) + '.';
     clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 8000);
   }
+  /* ---------- Versets possibles : le pasteur cite de mémoire ou oublie la référence ---------- */
+  var sg = { list: [], seenCount: 0, cueTimer: null, lastAi: 0, aiCount: 0, expire: null, busy: false };
+  var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible)/;
+  function plain(t) { return VersetCore.norm(t).replace(/[^a-z0-9]+/g, ' '); }
+  function recentWords(n) { var w = core.words(st.finalText); return w.slice(Math.max(0, w.length - n)); }
+  function renderSugg() {
+    var box = $('sugg'); box.innerHTML = '';
+    sg.list.forEach(function (it, i) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'sg';
+      var k = document.createElement('kbd'); k.textContent = String(i + 1);
+      var t = document.createElement('b'); t.textContent = core.label(it.ref);
+      var src = document.createElement('small'); src.textContent = it.src; t.appendChild(src);
+      var x = document.createElement('span'); x.textContent = core.text(it.ref);
+      b.appendChild(k); b.appendChild(t); b.appendChild(x);
+      b.addEventListener('click', function () { pickSugg(i); });
+      box.appendChild(b);
+    });
+  }
+  function setSugg(items, note) {
+    var seen = {}, out = [];
+    items.forEach(function (it) {
+      var k = core.key(it.ref);
+      if (seen[k] || (st.cur && k === core.key(st.cur))) return;
+      seen[k] = 1; out.push(it);
+    });
+    sg.list = out.slice(0, 4); renderSugg();
+    $('suggNote').textContent = note || '';
+    clearTimeout(sg.expire);
+    if (sg.list.length) sg.expire = setTimeout(function () { sg.list = []; renderSugg(); $('suggNote').textContent = ''; }, 90000);
+  }
+  function pickSugg(i) {
+    var it = sg.list[i]; if (!it) return;
+    manual(it.ref);
+    sg.list = []; renderSugg(); $('suggNote').textContent = '';
+  }
+  function localCandidates(words, loose) {
+    var r = core.keywordSearch(words, 4);
+    if (!r.length) return [];
+    if (!loose) {                                   // en continu : seulement une correspondance nette
+      var top = r[0], second = r[1] ? r[1].score : 0;
+      if (top.score < 17 || top.terms < 3 || top.score < second * 1.5) return [];   // nettement au-dessus des autres
+      return [{ ref: top, src: 'mots' }];
+    }
+    return r.filter(function (x) { return x.score >= 10 && x.terms >= 2; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
+  }
+  function onNewPhrase() {
+    var words = recentWords(30);
+    var strong = localCandidates(words, false);
+    if (strong.length) setSugg(strong.concat(sg.list));
+    // « la Bible dit… », « il est écrit… » : on attend la suite de la phrase, puis on cherche
+    var last = plain(st.finalText.slice(-160));
+    if (CUE.test(last) && !sg.cueTimer && st.listening) {
+      sg.cueTimer = setTimeout(function () { sg.cueTimer = null; search(false); }, 7000);
+    }
+  }
+  function aiUrl() { return DG_SERVICE ? DG_SERVICE.replace(/\/+$/, '') + '/ia' : ''; }
+  function search(manualAsk) {
+    if (sg.busy) return;
+    var words = recentWords(manualAsk ? 60 : 45);
+    if (words.length < 4) { if (manualAsk) $('suggNote').textContent = "Pas encore assez de paroles entendues."; return; }
+    var local = localCandidates(words, true);
+    var canAi = !!(aiUrl() && dgKey() && !inArtifact);
+    var now = Date.now();
+    if (!canAi || (!manualAsk && (now - sg.lastAi < 15000 || sg.aiCount >= 60))) {
+      setSugg(local, local.length ? '' : (manualAsk ? 'Aucun verset trouvé avec ces mots.' : ''));
+      if (manualAsk && !canAi) $('suggNote').textContent = (local.length ? '' : 'Aucun verset trouvé avec ces mots. ') + "La recherche IA demande le code d'accès Deepgram et l'appli ouverte hors de Claude.";
+      return;
+    }
+    sg.busy = true; sg.lastAi = now; sg.aiCount++;
+    $('aiBtn').disabled = true; $('aiBtn').textContent = 'Recherche en cours…';
+    if (local.length) setSugg(local, 'Recherche IA en cours…');
+    var texte = words.join(' ');
+    fetch(aiUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+                     body: JSON.stringify({ code: dgKey(), texte: st.finalText.slice(-700) || texte }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { r: r, d: d }; }); })
+      .then(function (res) {
+        var d = res.d || {}, ai = [];
+        (d.versets || []).forEach(function (str) {
+          var f = core.findRefs(String(str), null, { abbr: true });
+          if (f.length) ai.push({ ref: f[0], src: 'IA' });
+        });
+        var note = '';
+        if (d.erreur === 'ia-limite') note = "Limite gratuite de l'IA atteinte pour aujourd'hui. La recherche par mots continue.";
+        else if (d.erreur === 'ia-config') note = "L'IA n'est pas encore reliée au service Cloudflare (liaison AI).";
+        else if (d.erreur === 'code') note = "Code d'accès refusé.";
+        else if (d.erreur) note = "La recherche IA n'a pas répondu. La recherche par mots continue.";
+        else if (!ai.length && !local.length) note = manualAsk ? 'Aucun verset précis trouvé dans ces paroles.' : '';
+        setSugg(ai.concat(local), note);
+      })
+      .catch(function () { setSugg(local, "La recherche IA ne répond pas. Vérifie la connexion Internet."); })
+      .then(function () { sg.busy = false; $('aiBtn').disabled = false; $('aiBtn').textContent = 'Chercher le verset dont il parle'; });
+  }
+
   function undo() {
     if (st.history.length < 2) return;
     var back = st.history[1];
@@ -900,7 +1088,7 @@ body.proj #panel { display: none; }
     clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 5000);
   }
 
-  function appendFinal(t) { t = (t || '').trim(); if (t) st.finalText += (st.finalText ? ' ' : '') + t; }
+  function appendFinal(t) { t = (t || '').trim(); if (t) { st.finalText += (st.finalText ? ' ' : '') + t; st.finalCount = (st.finalCount || 0) + 1; } }
 
   /* ---------- Écoute ---------- */
   function say(m) { $('msg').textContent = m || ''; }
@@ -1145,6 +1333,7 @@ body.proj #panel { display: none; }
   $('nextBtn').addEventListener('click', function () { if (st.cur) manual(core.next(st.cur)); });
   $('blankBtn').addEventListener('click', toggleBlank);
   $('undoBtn').addEventListener('click', undo);
+  $('aiBtn').addEventListener('click', function () { search(true); });
   $('projBtn').addEventListener('click', function () { setProj(true); });
   $('exitProj').addEventListener('click', function () { setProj(false); });
   document.addEventListener('fullscreenchange', function () {
@@ -1180,6 +1369,7 @@ body.proj #panel { display: none; }
     else if (ev.key === 'ArrowLeft') { if (st.cur) manual(core.prev(st.cur)); ev.preventDefault(); }
     else if (ev.key === 'b' || ev.key === 'B') toggleBlank();
     else if (ev.key === 'Backspace') { undo(); ev.preventDefault(); }
+    else if (/^[1-4]$/.test(ev.key) && sg.list.length) { pickSugg(+ev.key - 1); ev.preventDefault(); }
     else if (ev.key === 'p' || ev.key === 'P') setProj(!document.body.classList.contains('proj'));
     else if (ev.key === 'Escape' && document.body.classList.contains('proj') && !document.fullscreenElement) setProj(false);
     else if (ev.key === '/') { $('goto').focus(); ev.preventDefault(); }
@@ -1190,7 +1380,10 @@ body.proj #panel { display: none; }
   if (store('vd-auto') === '0') $('auto').checked = false;
   if (store('vd-bytext') === '0') $('byText').checked = false;
   // index du texte construit juste après l'affichage, pour ne pas retarder l'ouverture
-  setTimeout(function () { try { core.buildIndex(); indexReady = true; } catch (e) {} }, 300);
+  setTimeout(function () {
+    try { core.buildIndex(); indexReady = true; } catch (e) {}
+    setTimeout(function () { try { core.buildKeywords(); } catch (e) {} }, 50);
+  }, 300);
   if (store('vd-lang')) $('lang').value = store('vd-lang');
   render(); engineNote();
   if (inArtifact) {
