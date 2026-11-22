@@ -1010,7 +1010,7 @@ body.proj #panel { display: none; }
   }
   /* ---------- Versets possibles : le pasteur cite de mémoire ou oublie la référence ---------- */
   var sg = { list: [], seenCount: 0, cueTimer: null, lastAi: 0, aiCount: 0, expire: null, busy: false };
-  var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible)/;
+  var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible|l histoire de|le recit de|le passage ou|la parabole)/;
   function plain(t) { return VersetCore.norm(t).replace(/[^a-z0-9]+/g, ' '); }
   function recentWords(n) { var w = core.words(st.finalText); return w.slice(Math.max(0, w.length - n)); }
   function renderSugg() {
@@ -1034,6 +1034,10 @@ body.proj #panel { display: none; }
       if (seen[k]) return;
       seen[k] = 1; out.push(it);
     });
+    // quand l'IA a trouvé, les résultats « mots » ne restent que s'ils sont dans le même chapitre qu'elle
+    var aiCh = {};
+    out.forEach(function (it) { if (/^IA/.test(it.src)) aiCh[it.ref.b + ':' + it.ref.c] = 1; });
+    if (Object.keys(aiCh).length) out = out.filter(function (it) { return /^IA/.test(it.src) || aiCh[it.ref.b + ':' + it.ref.c]; });
     sg.list = out.slice(0, 4); renderSugg();
     var already = onScreen ? core.label(st.cur) + ' est déjà à l\'écran.' : '';
     $('suggNote').textContent = [already, note || ''].filter(Boolean).join(' ');
@@ -1054,7 +1058,8 @@ body.proj #panel { display: none; }
       if (top.own < 17 || top.terms < 3 || top.own < second * 1.5) return [];   // nettement au-dessus des autres
       return [{ ref: top, src: 'mots' }];
     }
-    return r.filter(function (x) { return x.score >= 10 && x.terms >= 2; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
+    var best = r[0].score;
+    return r.filter(function (x) { return x.score >= 10 && x.terms >= 2 && x.score >= best * 0.5; }).slice(0, 3).map(function (x) { return { ref: x, src: 'mots' }; });
   }
   function onNewPhrase() {
     var words = recentWords(30);
@@ -1062,12 +1067,13 @@ body.proj #panel { display: none; }
     if (strong.length) setSugg(strong.concat(sg.list));
     // « la Bible dit… », « il est écrit… » : on attend la suite de la phrase, puis on cherche
     var last = plain(st.finalText.slice(-160));
-    scheduleAnalyse(CUE.test(last));
-    if (aiLiveActive()) return;
-    if (CUE.test(last) && !sg.cueTimer && st.listening) {
-      sg.cueTimer = setTimeout(function () { sg.cueTimer = null; search(false); }, 7000);
+    var cue = CUE.test(last);
+    scheduleAnalyse(cue);
+    if (cue && !sg.cueTimer && st.listening) {
+      sg.cueTimer = setTimeout(function () { sg.cueTimer = null; search(false); }, aiLiveActive() ? 3000 : 7000);
     }
   }
+  function keepAi() { return sg.list.filter(function (it) { return /^IA/.test(it.src); }); }
   function aiUrl() { return DG_SERVICE ? DG_SERVICE.replace(/\/+$/, '') + '/ia' : ''; }
   function search(manualAsk) {
     if (sg.busy) return;
@@ -1076,8 +1082,8 @@ body.proj #panel { display: none; }
     var local = localCandidates(words, true);
     var canAi = !!(aiUrl() && dgKey() && !inArtifact);   // Claude Sonnet côté service (secours : Workers AI)
     var now = Date.now();
-    if (!canAi || (!manualAsk && (now - sg.lastAi < 15000 || sg.aiCount >= 60))) {
-      setSugg(local, local.length ? '' : (manualAsk ? 'Aucun verset trouvé avec ces mots.' : ''));
+    if (!canAi || (!manualAsk && (aiLiveActive() || now - sg.lastAi < 15000 || sg.aiCount >= 60))) {
+      setSugg(keepAi().concat(local), local.length || keepAi().length ? '' : (manualAsk ? 'Aucun verset trouvé avec ces mots.' : ''));
       if (manualAsk && !canAi) $('suggNote').textContent = (local.length ? '' : 'Aucun verset trouvé avec ces mots. ') + "La recherche IA demande le code d'accès Deepgram et l'appli ouverte hors de Claude.";
       return;
     }
@@ -1101,7 +1107,7 @@ body.proj #panel { display: none; }
         else if (d.erreur) note = "La recherche IA n'a pas répondu. La recherche par mots continue.";
         else if (!ai.length && !local.length) note = manualAsk ? 'Aucun verset précis trouvé dans ces paroles.' : '';
         else if (!ai.length && manualAsk) note = "L'IA n'a pas reconnu de verset précis. Propositions trouvées par les mots :";
-        setSugg(ai.concat(local), note);
+        setSugg(ai.concat(keepAi(), local), note);
       })
       .catch(function () { setSugg(local, "La recherche IA ne répond pas. Vérifie la connexion Internet."); })
       .then(function () { sg.busy = false; $('aiBtn').disabled = false; $('aiBtn').textContent = 'Chercher le verset dont il parle'; });
@@ -1118,7 +1124,8 @@ body.proj #panel { display: none; }
     if (inArtifact || !DG_SERVICE) { el.textContent = "IA : disponible seulement dans l'appli ouverte hors de Claude."; return; }
     if (!dgKey()) { el.textContent = "IA : entre le code d'accès pour l'activer."; return; }
     if (ai.off) { el.textContent = 'IA : ' + ai.off; return; }
-    el.textContent = st.listening ? 'IA : à l\'écoute · ' + ai.calls + ' analyse' + (ai.calls > 1 ? 's' : '') : "IA : prête, démarre l'écoute.";
+    el.textContent = st.listening ? 'IA : à l\'écoute · ' + ai.calls + ' analyse' + (ai.calls > 1 ? 's' : '') +
+      (ai.lastResult ? ' · dernière : ' + ai.lastResult : '') : "IA : prête, démarre l'écoute.";
   }
   function scheduleAnalyse(urgent) {
     if (!aiLiveActive() || !st.listening) return;
@@ -1154,6 +1161,11 @@ body.proj #panel { display: none; }
                  'ia-modele': "modèle Claude indisponible pour ce compte.",
                  'code': "code d'accès refusé." };
     if (d.erreur) { if (stop[d.erreur]) { ai.off = stop[d.erreur]; aiStatus(); } return; }
+    if (!('verset' in d)) {
+      ai.off = "le service Cloudflare n'est pas à jour : remplace son code par le nouveau worker.js, puis Deploy.";
+      aiStatus(); return;
+    }
+    ai.lastResult = d.verset ? (d.verset + ' (' + (+d.confiance || 0) + ' %)') : 'rien de précis';
     var now = Date.now(), items = [];
     var v = d.verset ? parseRef(d.verset) : null, conf = +d.confiance || 0;
     if (v && !(st.cur && core.key(v) === core.key(st.cur))) {
