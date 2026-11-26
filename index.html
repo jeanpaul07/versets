@@ -178,9 +178,9 @@ body.proj #panel { display: none; }
   </section>
 
   <section id="dgBox" hidden>
-    <h2>Moteur Deepgram</h2>
+    <h2>Reconnaissance vocale</h2>
     <form id="dgForm" class="field">
-      <input id="dgKey" type="password" autocomplete="off" placeholder="Code d'accès" aria-label="Code d'accès Deepgram">
+      <input id="dgKey" type="password" autocomplete="off" placeholder="Code d'accès" aria-label="Code d'accès">
       <button class="btn" type="submit">Enregistrer</button>
     </form>
     <p class="note"><span id="dgNote"></span> <button id="dgClear" class="chip" type="button" hidden>Oublier le code</button></p>
@@ -221,12 +221,12 @@ body.proj #panel { display: none; }
   <section>
     <label class="check"><input id="auto" type="checkbox" checked> Passer seul au verset suivant pendant la lecture</label>
     <label class="check"><input id="byText" type="checkbox" checked> Corriger et trouver le verset d'après le texte lu</label>
-    <label class="check"><input id="aiLive" type="checkbox" checked> IA à l'écoute en continu (Claude)</label>
+    <label class="check"><input id="aiLive" type="checkbox" checked> Analyse continue des paroles</label>
     <div class="modeRow">
       <label for="mode">Affichage</label>
       <select id="mode">
         <option value="auto">Automatique (recommandé)</option>
-        <option value="assiste">Assisté : la régie valide l'IA</option>
+        <option value="assiste">Assisté : la régie valide les propositions</option>
         <option value="manuel">Manuel : la régie valide tout</option>
       </select>
     </div>
@@ -978,8 +978,8 @@ body.proj #panel { display: none; }
      assiste : seuls les références dites et les versets lus s'affichent seuls ; l'IA propose
      manuel  : rien ne s'affiche seul ; tout est proposé à la régie */
   var MODE_TXT = {
-    auto: "Les références dites, les versets lus et les citations vérifiées par l'IA (90 % et plus) s'affichent seuls. Les récits et les cas incertains sont proposés.",
-    assiste: "Les références dites et les versets lus s'affichent seuls. Tout ce que trouve l'IA est proposé à la régie.",
+    auto: "Les références dites, les versets lus et les citations vérifiées (90 % et plus) s'affichent seuls. Les récits et les cas incertains sont proposés.",
+    assiste: "Les références dites et les versets lus s'affichent seuls. Les citations et les récits reconnus sont proposés à la régie.",
     manuel: "Rien ne s'affiche seul. Chaque verset reconnu est proposé : la régie clique ou appuie sur 1 à 4."
   };
   function mode() { return $('mode').value; }
@@ -1070,8 +1070,8 @@ body.proj #panel { display: none; }
     });
     // quand l'IA a trouvé, les résultats « mots » ne restent que s'ils sont dans le même chapitre qu'elle
     var aiCh = {};
-    out.forEach(function (it) { if (/^IA/.test(it.src)) aiCh[it.ref.b + ':' + it.ref.c] = 1; });
-    if (Object.keys(aiCh).length) out = out.filter(function (it) { return /^IA/.test(it.src) || aiCh[it.ref.b + ':' + it.ref.c]; });
+    out.forEach(function (it) { if (it.ai) aiCh[it.ref.b + ':' + it.ref.c] = 1; });
+    if (Object.keys(aiCh).length) out = out.filter(function (it) { return it.ai || aiCh[it.ref.b + ':' + it.ref.c]; });
     sg.list = out.slice(0, 4); renderSugg();
     var already = onScreen ? core.label(st.cur) + ' est déjà à l\'écran.' : '';
     $('suggNote').textContent = [already, note || ''].filter(Boolean).join(' ');
@@ -1107,7 +1107,7 @@ body.proj #panel { display: none; }
       sg.cueTimer = setTimeout(function () { sg.cueTimer = null; search(false); }, aiLiveActive() ? 3000 : 7000);
     }
   }
-  function keepAi() { return sg.list.filter(function (it) { return /^IA/.test(it.src); }); }
+  function keepAi() { return sg.list.filter(function (it) { return it.ai; }); }
   function aiUrl() { return DG_SERVICE ? DG_SERVICE.replace(/\/+$/, '') + '/ia' : ''; }
   function search(manualAsk) {
     if (sg.busy) return;
@@ -1123,12 +1123,12 @@ body.proj #panel { display: none; }
     var now = Date.now();
     if (!canAi || (!manualAsk && (aiLiveActive() || now - sg.lastAi < 15000 || sg.aiCount >= 60))) {
       setSugg(keepAi().concat(local), local.length || keepAi().length ? '' : (manualAsk ? 'Aucun verset trouvé avec ces mots.' : ''));
-      if (manualAsk && !canAi) $('suggNote').textContent = (local.length ? '' : 'Aucun verset trouvé avec ces mots. ') + "La recherche IA demande le code d'accès Deepgram et l'appli ouverte hors de Claude.";
+      if (manualAsk && !canAi) $('suggNote').textContent = (local.length ? '' : 'Aucun verset trouvé avec ces mots. ') + "La recherche avancée demande le code d'accès et l'appli ouverte depuis GitHub ou Demarrer.bat.";
       return;
     }
     sg.busy = true; sg.lastAi = now; sg.aiCount++;
     $('aiBtn').disabled = true; $('aiBtn').textContent = 'Recherche en cours…';
-    if (local.length) setSugg(local, 'Recherche IA en cours…');
+    if (local.length) setSugg(local, 'Recherche en cours…');
     var texte = words.join(' ');
     fetch(aiUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
                      body: JSON.stringify({ code: dgKey(), texte: fullText().slice(-700) || texte, candidats: bibleCandidates(words, 6) }) })
@@ -1137,18 +1137,18 @@ body.proj #panel { display: none; }
         var d = res.d || {}, ai = [];
         (d.versets || []).forEach(function (str) {
           var f = core.findRefs(String(str), null, { abbr: true });
-          if (f.length) ai.push({ ref: f[0], src: 'IA' });
+          if (f.length) ai.push({ ref: f[0], src: 'suggestion', ai: true });
         });
         var note = '';
-        if (d.erreur === 'ia-limite') note = "Limite gratuite de l'IA atteinte pour aujourd'hui. La recherche par mots continue.";
-        else if (d.erreur === 'ia-config') note = "L'IA n'est pas encore reliée au service Cloudflare (liaison AI).";
+        if (d.erreur === 'ia-limite') note = "Limite de la recherche avancée atteinte pour aujourd'hui. La recherche par mots continue.";
+        else if (d.erreur === 'ia-config') note = "La recherche avancée n'est pas encore reliée au service Cloudflare.";
         else if (d.erreur === 'code') note = "Code d'accès refusé.";
-        else if (d.erreur) note = "La recherche IA n'a pas répondu. La recherche par mots continue.";
+        else if (d.erreur) note = "La recherche avancée n'a pas répondu. La recherche par mots continue.";
         else if (!ai.length && !local.length) note = manualAsk ? 'Aucun verset précis trouvé dans ces paroles.' : '';
-        else if (!ai.length && manualAsk) note = "L'IA n'a pas reconnu de verset précis. Propositions trouvées par les mots :";
+        else if (!ai.length && manualAsk) note = "Aucun verset précis reconnu. Propositions trouvées par les mots :";
         setSugg(ai.concat(keepAi(), local), note);
       })
-      .catch(function () { setSugg(local, "La recherche IA ne répond pas. Vérifie la connexion Internet."); })
+      .catch(function () { setSugg(local, "La recherche avancée ne répond pas. Vérifie la connexion Internet."); })
       .then(function () { sg.busy = false; $('aiBtn').disabled = false; $('aiBtn').textContent = 'Chercher le verset dont il parle'; });
   }
 
@@ -1160,11 +1160,11 @@ body.proj #panel { display: none; }
   function aiStatus() {
     var el = $('aiState');
     if (!$('aiLive').checked) { el.textContent = ''; return; }
-    if (inArtifact || !DG_SERVICE) { el.textContent = "IA : disponible seulement dans l'appli ouverte hors de Claude."; return; }
-    if (!dgKey()) { el.textContent = "IA : entre le code d'accès pour l'activer."; return; }
-    if (ai.off) { el.textContent = 'IA : ' + ai.off; return; }
-    el.textContent = st.listening ? 'IA : à l\'écoute · ' + ai.calls + ' analyse' + (ai.calls > 1 ? 's' : '') +
-      (ai.lastResult ? ' · dernière : ' + ai.lastResult : '') : "IA : prête, démarre l'écoute.";
+    if (inArtifact || !DG_SERVICE) { el.textContent = "Analyse : disponible seulement dans l'appli ouverte depuis GitHub ou Demarrer.bat."; return; }
+    if (!dgKey()) { el.textContent = "Analyse : entre le code d'accès pour l'activer."; return; }
+    if (ai.off) { el.textContent = 'Analyse : ' + ai.off; return; }
+    el.textContent = st.listening ? 'Analyse : à l\'écoute · ' + ai.calls + ' analyse' + (ai.calls > 1 ? 's' : '') +
+      (ai.lastResult ? ' · dernière : ' + ai.lastResult : '') : "Analyse : prête, démarre l'écoute.";
   }
   function scheduleAnalyse(urgent) {
     if (!aiLiveActive() || !st.listening) return;
@@ -1201,10 +1201,10 @@ body.proj #panel { display: none; }
   }
   function parseRef(str) { var f = core.findRefs(String(str || ''), null, { abbr: true }); return f.length ? f[0] : null; }
   function onAnalyse(d) {
-    var stop = { 'ia-cle-absente': "clé Anthropic absente dans Cloudflare (secret ANTHROPIC_API_KEY).",
-                 'ia-cle': 'clé Anthropic refusée. Vérifie le secret ANTHROPIC_API_KEY dans Cloudflare.',
-                 'ia-credit': 'crédit Anthropic épuisé. Ajoute du crédit sur console.anthropic.com.',
-                 'ia-modele': "modèle Claude indisponible pour ce compte.",
+    var stop = { 'ia-cle-absente': "clé du service d'analyse absente dans Cloudflare.",
+                 'ia-cle': 'clé du service d\'analyse refusée. Vérifie le secret dans Cloudflare.',
+                 'ia-credit': 'crédit du service d\'analyse épuisé. Recharge le compte du service.',
+                 'ia-modele': "modèle d'analyse indisponible pour ce compte.",
                  'code': "code d'accès refusé." };
     if (d.erreur) { if (stop[d.erreur]) { ai.off = stop[d.erreur]; aiStatus(); } return; }
     if (!('verset' in d)) {
@@ -1215,7 +1215,7 @@ body.proj #panel { display: none; }
     var items = [];
     var v = d.verset ? parseRef(d.verset) : null, conf = +d.confiance || 0;
     if (v && !(st.cur && core.key(v) === core.key(st.cur)) && conf >= 60) verify(v, d);
-    (d.autres || []).forEach(function (o) { var r = parseRef(o); if (r) items.push({ ref: r, src: 'IA' }); });
+    (d.autres || []).forEach(function (o) { var r = parseRef(o); if (r) items.push({ ref: r, src: 'suggestion', ai: true }); });
     if (items.length) setSugg(items.concat(sg.list));
   }
 
@@ -1228,7 +1228,7 @@ body.proj #panel { display: none; }
     if (ai.shown[k] && now - ai.shown[k] < 20000) return true;
     ai.shown[k] = now; ai.autoKey = k;
     manual(ref);
-    $('autoNote').textContent = "Affiché par l'IA" + how + ' : ' + core.label(ref) + ' (' + conf + ' %). Retour arrière pour annuler.';
+    $('autoNote').textContent = "Affiché automatiquement" + how + ' : ' + core.label(ref) + ' (' + conf + ' %). Retour arrière pour annuler.';
     clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 9000);
     return true;
   }
@@ -1242,7 +1242,7 @@ body.proj #panel { display: none; }
     set = set.slice(0, 12);
     if (vf.inflight || vf.calls >= 400) {                     // pas de vérification possible : prudence
       if (canAuto && conf >= 95) autoShow(v, conf, '');
-      else setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list));
+      else setSugg([{ ref: v, src: conf + ' %', ai: true }].concat(sg.list));
       return;
     }
     vf.inflight = true; vf.calls++;
@@ -1253,20 +1253,20 @@ body.proj #panel { display: none; }
       .then(function (r) {
         if (r.erreur || !('choix' in r)) {                     // vérification indisponible : on retombe sur Haiku seul
           if (canAuto && conf >= 95) autoShow(v, conf, '');
-          else setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list));
+          else setSugg([{ ref: v, src: conf + ' %', ai: true }].concat(sg.list));
           return;
         }
         var c = r.choix ? parseRef(r.choix) : null, cc = +r.confiance || 0;
         if (!c) {                                              // Sonnet ne reconnaît aucun de ces versets
-          if (conf >= 92) setSugg(sg.list.concat([{ ref: v, src: 'IA ?' }]));   // proposé en dernier, seulement si Haiku était très sûr
+          if (conf >= 92) setSugg(sg.list.concat([{ ref: v, src: 'à confirmer', ai: true }]));   // proposé en dernier, seulement si Haiku était très sûr
           ai.lastResult = core.label(v) + ' non confirmé';
           aiStatus(); return;
         }
         ai.lastResult = core.label(c) + ' (vérifié ' + cc + ' %)'; aiStatus();
         if (canAuto && cc >= 90 && autoShow(c, cc, ' (vérifié)')) return;
-        setSugg([{ ref: c, src: 'IA ✓ ' + cc + ' %' }].concat(sg.list));
+        setSugg([{ ref: c, src: '✓ ' + cc + ' %', ai: true }].concat(sg.list));
       })
-      .catch(function () { setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list)); })
+      .catch(function () { setSugg([{ ref: v, src: conf + ' %', ai: true }].concat(sg.list)); })
       .then(function () { vf.inflight = false; });
   }
 
@@ -1305,18 +1305,18 @@ body.proj #panel { display: none; }
     var hasKey = !!dgKey() && !!DG_SERVICE;
     $('dgClear').hidden = !dgKey();
     $('dgKey').placeholder = dgKey() ? 'Code enregistré (taper pour remplacer)' : "Code d'accès";
-    $('dgNote').textContent = !DG_SERVICE ? "Le service Deepgram n'est pas encore configuré dans ce fichier." :
-      (dgKey() ? 'La clé Deepgram reste sur le service sécurisé : cet ordinateur garde seulement le code.' :
+    $('dgNote').textContent = !DG_SERVICE ? "Le service de reconnaissance n'est pas encore configuré dans ce fichier." :
+      (dgKey() ? 'La clé du service reste sur le serveur sécurisé : cet ordinateur garde seulement le code.' :
        "Entre le code d'accès une fois sur cet ordinateur. Sans code, l'appli utilise la reconnaissance de Chrome, moins précise.");
     if (!inArtifact && hasKey) {
       $('langRow').hidden = false;
-      n.textContent = 'Moteur utilisé : Deepgram, avec la liste des livres de la Bible. Internet requis.';
+      n.textContent = 'Moteur utilisé : reconnaissance vocale avancée, avec la liste des livres de la Bible. Internet requis.';
       return;
     }
     if (dict) n.textContent = "Le navigateur demandera l'accès au micro au premier démarrage.";
     else if (inArtifact && !dictReady) n.textContent = 'Préparation du micro…';
     else if (inArtifact) n.textContent = "Le micro n'est pas disponible dans cette fenêtre. Ouvre la page dans Chrome sur un ordinateur. La démonstration fonctionne partout.";
-    if (inArtifact && dict) n.textContent += ' Le moteur Deepgram fonctionne seulement hors de Claude (Demarrer.bat ou GitHub Pages).';
+    if (inArtifact && dict) n.textContent += ' La reconnaissance avancée fonctionne seulement dans l\'appli ouverte depuis GitHub ou Demarrer.bat.';
     else if (SR) n.textContent = 'Micro utilisé : celui choisi par défaut dans Chrome. La reconnaissance vocale de Chrome a besoin d\'Internet.';
     else n.textContent = 'Ce navigateur ne gère pas la reconnaissance vocale. Utilise Chrome ou Edge sur un ordinateur.';
   }
@@ -1408,11 +1408,11 @@ body.proj #panel { display: none; }
     }).catch(function (err) {
       st.want = false; dgRelease();
       var m = err && err.message;
-      if (m === 'code') say("Code d'accès refusé. Vérifie-le dans la section « Moteur Deepgram ».");
+      if (m === 'code') say("Code d'accès refusé. Vérifie-le dans la section « Reconnaissance vocale ».");
       else if (m === 'config') say('Service Cloudflare incomplet : il manque le secret DEEPGRAM_API_KEY ou CODE_ACCES.');
-      else if (m === 'deepgram') say('Deepgram refuse la clé enregistrée dans Cloudflare (DEEPGRAM_API_KEY). Recolle le secret de la clé.');
+      else if (m === 'deepgram') say('Le service de reconnaissance refuse la clé enregistrée dans Cloudflare. Recolle le secret de la clé.');
       else if (m === 'refuse') say("Le service refuse cette adresse. Ouvre l'appli depuis GitHub Pages ou Demarrer.bat.");
-      else say('Le service Deepgram ne répond pas. Vérifie la connexion Internet, puis réessaie.');
+      else say('Le service de reconnaissance ne répond pas. Vérifie la connexion Internet, puis réessaie.');
     });
   }
   function dgConnect(key, tok, withTerms) {
@@ -1420,11 +1420,11 @@ body.proj #panel { display: none; }
     if (withTerms) dgTerms().forEach(function (t) { q += '&keyterm=' + encodeURIComponent(t); });
     var ws, opened = false;
     try { ws = new WebSocket('wss://api.deepgram.com/v1/listen?' + q, ['bearer', tok]); }
-    catch (e) { st.want = false; dgRelease(); say('Impossible de joindre Deepgram.'); return; }
+    catch (e) { st.want = false; dgRelease(); say('Impossible de joindre le service de reconnaissance.'); return; }
     dg.ws = ws;
     ws.onopen = function () {
       opened = true; setListening(true);
-      say(withTerms ? '' : 'Deepgram a refusé la liste des livres : écoute lancée sans elle.');
+      say(withTerms ? '' : 'Le service a refusé la liste des livres : écoute lancée sans elle.');
       var mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
       try {
         dg.mr = mime ? new MediaRecorder(dg.stream, { mimeType: mime }) : new MediaRecorder(dg.stream);
@@ -1445,7 +1445,7 @@ body.proj #panel { display: none; }
       if (!opened) {
         if (withTerms && !dg.triedPlain) { dg.triedPlain = true; dgOpen(key, false); return; }
         st.want = false; dgRelease();
-        say('Deepgram a refusé la connexion. Vérifie le crédit du compte Deepgram et la connexion Internet.');
+        say('Le service de reconnaissance a refusé la connexion. Vérifie le crédit du compte et la connexion Internet.');
         return;
       }
       if (st.interim) { appendFinal(st.interim); st.interim = ''; process(); }
@@ -1455,7 +1455,7 @@ body.proj #panel { display: none; }
   }
   function startDeepgram(key) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-      say('Ce navigateur ne peut pas capter le micro pour Deepgram. Utilise Chrome ou Edge.'); return;
+      say('Ce navigateur ne peut pas capter le micro pour la reconnaissance avancée. Utilise Chrome ou Edge.'); return;
     }
     st.want = true; dg.triedPlain = false;
     navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } })
