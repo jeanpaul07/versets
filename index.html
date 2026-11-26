@@ -121,6 +121,9 @@ h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: upperca
 #aiBtn { width: 100%; }
 #aiBtn[disabled] { opacity: .6; cursor: progress; }
 #suggNote:empty, #aiState:empty { display: none; }
+.modeRow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.modeRow label { font-size: 14px; }
+.modeRow select { flex: 1 1 auto; }
 #heard em { color: var(--muted); font-style: italic; }
 #heard:empty::before { content: "Rien pour l'instant."; color: var(--muted); }
 #nextUp { margin: 10px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
@@ -219,7 +222,15 @@ body.proj #panel { display: none; }
     <label class="check"><input id="auto" type="checkbox" checked> Passer seul au verset suivant pendant la lecture</label>
     <label class="check"><input id="byText" type="checkbox" checked> Corriger et trouver le verset d'après le texte lu</label>
     <label class="check"><input id="aiLive" type="checkbox" checked> IA à l'écoute en continu (Claude)</label>
-    <label class="check"><input id="aiAuto" type="checkbox" checked> Afficher d'office quand l'IA est sûre (90 % et plus)</label>
+    <div class="modeRow">
+      <label for="mode">Affichage</label>
+      <select id="mode">
+        <option value="auto">Automatique (recommandé)</option>
+        <option value="assiste">Assisté : la régie valide l'IA</option>
+        <option value="manuel">Manuel : la régie valide tout</option>
+      </select>
+    </div>
+    <p id="modeNote" class="note"></p>
     <p id="aiState" class="note"></p>
   </section>
 
@@ -962,6 +973,23 @@ body.proj #panel { display: none; }
     if (typeof ai !== 'undefined') ai.pos = Math.max(0, ai.pos - cut);
     st.prevFinalLen = Math.max(0, st.prevFinalLen - cut);
   }
+  /* Modes d'affichage
+     auto    : références dites, versets lus et citations vérifiées à 90 % et plus s'affichent seuls ; le reste est proposé
+     assiste : seuls les références dites et les versets lus s'affichent seuls ; l'IA propose
+     manuel  : rien ne s'affiche seul ; tout est proposé à la régie */
+  var MODE_TXT = {
+    auto: "Les références dites, les versets lus et les citations vérifiées par l'IA (90 % et plus) s'affichent seuls. Les récits et les cas incertains sont proposés.",
+    assiste: "Les références dites et les versets lus s'affichent seuls. Tout ce que trouve l'IA est proposé à la régie.",
+    manuel: "Rien ne s'affiche seul. Chaque verset reconnu est proposé : la régie clique ou appuie sur 1 à 4."
+  };
+  function mode() { return $('mode').value; }
+  function modeNote() { $('modeNote').textContent = MODE_TXT[mode()] || ''; }
+  function offer(ref, src) {                       // proposer au lieu d'afficher
+    var r = { b: ref.b, c: ref.c, v: ref.v };
+    if (st.cur && core.key(r) === core.key(st.cur)) return;
+    if (sg.list.length && core.key(sg.list[0].ref) === core.key(r)) return;
+    setSugg([{ ref: r, src: src }].concat(sg.list));
+  }
   function process() {
     trim();
     var full = fullText();
@@ -972,6 +1000,7 @@ body.proj #panel { display: none; }
       if (st.last && k === st.last.key && s < st.last.end) { st.last.start = s; st.last.end = e; continue; }  // même citation, texte affiné
       if (e <= st.prevFinalLen) continue;                         // déjà vu
       if (r.chapterOnly && e > st.finalText.length) continue;     // « Jean 3 » : on attend la suite de la phrase
+      if (mode() === 'manuel') { if (!r.contextual || st.cur) offer(r, 'dit'); continue; }
       jump(r, s, e);
     }
     st.prevFinalLen = st.finalText.length;
@@ -1002,6 +1031,7 @@ body.proj #panel { display: none; }
     if (win.length < 6) return;
     var m = core.textMatch(win, st.cur, st.cur ? 4 : 5);        // plus exigeant quand rien n'est affiché
     if (!m || (st.cur && core.key(m) === core.key(st.cur))) return;
+    if (mode() === 'manuel') { offer(m, 'lu'); return; }
     var at = base + wp.p[lo + m.at];
     var was = st.cur ? core.label(st.cur) : null;
     jump(m, at, at);
@@ -1203,7 +1233,7 @@ body.proj #panel { display: none; }
     return true;
   }
   function verify(v, d) {
-    var conf = +d.confiance || 0, canAuto = $('aiAuto').checked && AUTO_TYPES[d.type];
+    var conf = +d.confiance || 0, canAuto = mode() === 'auto' && AUTO_TYPES[d.type];
     var set = [], seen = {};
     function add(r) { if (r && !seen[core.key(r)]) { seen[core.key(r)] = 1; set.push(r); } }
     add(v); add(core.prev(v)); add(core.next(v)); add(core.next(core.next(v) || v));
@@ -1233,7 +1263,7 @@ body.proj #panel { display: none; }
           aiStatus(); return;
         }
         ai.lastResult = core.label(c) + ' (vérifié ' + cc + ' %)'; aiStatus();
-        if (canAuto && cc >= 85 && autoShow(c, cc, ' (vérifié)')) return;
+        if (canAuto && cc >= 90 && autoShow(c, cc, ' (vérifié)')) return;
         setSugg([{ ref: c, src: 'IA ✓ ' + cc + ' %' }].concat(sg.list));
       })
       .catch(function () { setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list)); })
@@ -1536,7 +1566,7 @@ body.proj #panel { display: none; }
   $('auto').addEventListener('change', function () { store('vd-auto', $('auto').checked ? '1' : '0'); });
   $('byText').addEventListener('change', function () { store('vd-bytext', $('byText').checked ? '1' : '0'); });
   $('aiLive').addEventListener('change', function () { store('vd-ailive', $('aiLive').checked ? '1' : '0'); aiStatus(); });
-  $('aiAuto').addEventListener('change', function () { store('vd-aiauto', $('aiAuto').checked ? '1' : '0'); });
+  $('mode').addEventListener('change', function () { store('vd-mode', mode()); modeNote(); });
   $('lang').addEventListener('change', function () { store('vd-lang', $('lang').value); });
   document.addEventListener('keydown', function (ev) {
     var tag = (ev.target && ev.target.tagName) || '';
@@ -1556,7 +1586,9 @@ body.proj #panel { display: none; }
   if (store('vd-auto') === '0') $('auto').checked = false;
   if (store('vd-bytext') === '0') $('byText').checked = false;
   if (store('vd-ailive') === '0') $('aiLive').checked = false;
-  if (store('vd-aiauto') === '0') $('aiAuto').checked = false;
+  var savedMode = store('vd-mode') || (store('vd-aiauto') === '0' ? 'assiste' : 'auto');
+  if (MODE_TXT[savedMode]) $('mode').value = savedMode;
+  modeNote();
   setTimeout(aiStatus, 0);
   // index du texte construit juste après l'affichage, pour ne pas retarder l'ouverture
   setTimeout(function () {
