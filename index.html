@@ -638,7 +638,7 @@ body.proj #panel { display: none; }
     function track(spoken, V) {
       var j = 0, limit = Math.min(spoken.length, V.length * 4 + 60);
       for (var i = 0; i < limit && j < V.length; i++) {
-        var w = spoken[i], look = w.length <= 3 ? 2 : 5, end = Math.min(V.length, j + look);
+        var w = spoken[i], look = w.length <= 3 ? 1 : 5, end = Math.min(V.length, j + look);   // un petit mot (« de ») ne fait avancer que s'il est le mot suivant attendu
         for (var k = j; k < end; k++) { if (feq(w, V[k])) { j = k + 1; break; } }
       }
       return { j: j, prog: V.length ? j / V.length : 1 };
@@ -1044,7 +1044,7 @@ body.proj #panel { display: none; }
   }
   /* ---------- Versets possibles : le pasteur cite de mémoire ou oublie la référence ---------- */
   var sg = { list: [], seenCount: 0, cueTimer: null, lastAi: 0, aiCount: 0, expire: null, busy: false };
-  var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible|l histoire de|le recit de|le passage ou|la parabole)/;
+  var CUE = /(la bible (nous )?dit|il est ecrit|l ecriture dit|la parole (de dieu )?(nous )?dit|comme (le )?dit|jesus (a )?dit|paul (a )?dit|le verset qui dit|je ne (me )?(rappelle|souviens) plus|quelque part dans|vous connaissez (le|ce) verset|dans la bible|l histoire de|le recit de|le passage ou|la parabole|la bible qui dit|passage de la bible|un passage qui dit|il y a un (passage|verset)|un verset qui dit|je cherche (ce|le|un) verset|le verset ou|ce verset la|c est ecrit|il est dit)/;
   function plain(t) { return VersetCore.norm(t).replace(/[^a-z0-9]+/g, ' '); }
   function recentWords(n) { var w = core.words(fullText()); return w.slice(Math.max(0, w.length - n)); }
   function renderSugg() {
@@ -1228,6 +1228,7 @@ body.proj #panel { display: none; }
     if (ai.shown[k] && now - ai.shown[k] < 20000) return true;
     ai.shown[k] = now; ai.autoKey = k;
     manual(ref);
+    sg.list = []; renderSugg(); $('suggNote').textContent = '';   // le bon verset est à l'écran : les autres propositions ne servent plus
     $('autoNote').textContent = "Affiché automatiquement" + how + ' : ' + core.label(ref) + ' (' + conf + ' %). Retour arrière pour annuler.';
     clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 9000);
     return true;
@@ -1258,7 +1259,8 @@ body.proj #panel { display: none; }
         }
         var c = r.choix ? parseRef(r.choix) : null, cc = +r.confiance || 0;
         if (!c) {                                              // Sonnet ne reconnaît aucun de ces versets
-          if (conf >= 92) setSugg(sg.list.concat([{ ref: v, src: 'à confirmer', ai: true }]));   // proposé en dernier, seulement si Haiku était très sûr
+          var corro = core.keywordSearch(core.words(fullText()).slice(-60), 5).some(function (x) { return core.key(x) === core.key(v); });
+          if (conf >= 92 || (corro && conf >= 70)) setSugg([{ ref: v, src: 'à confirmer', ai: true }].concat(sg.list));   // deux indices concordants
           ai.lastResult = core.label(v) + ' non confirmé';
           aiStatus(); return;
         }
