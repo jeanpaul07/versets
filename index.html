@@ -1101,7 +1101,7 @@ body.proj #panel { display: none; }
     if (local.length) setSugg(local, 'Recherche IA en cours…');
     var texte = words.join(' ');
     fetch(aiUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-                     body: JSON.stringify({ code: dgKey(), texte: fullText().slice(-700) || texte }) })
+                     body: JSON.stringify({ code: dgKey(), texte: fullText().slice(-700) || texte, candidats: bibleCandidates(words, 6) }) })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { r: r, d: d }; }); })
       .then(function (res) {
         var d = res.d || {}, ai = [];
@@ -1153,6 +1153,7 @@ body.proj #panel { display: none; }
     ai.inflight = true; ai.last = Date.now(); ai.calls++; aiStatus();
     fetch(svc('/analyse'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
       body: JSON.stringify({ code: dgKey(), contexte: contexte, nouveau: nouveau.slice(-800),
+                             candidats: bibleCandidates(core.words(contexte.slice(-400) + ' ' + nouveau).slice(-60), 6),
                              affiche: st.cur ? core.label(st.cur) : '', recents: st.history.slice(0, 6).map(core.label) }) })
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (d) { ai.pos = Math.min(endPos, st.finalText.length); onAnalyse(d || {}); })
@@ -1161,6 +1162,12 @@ body.proj #panel { display: none; }
         ai.inflight = false; aiStatus();
         if (ai.pending) { ai.pending = false; scheduleAnalyse(false); }
       });
+  }
+  /* Versets de la Louis Segond qui partagent des mots avec les paroles : l'IA choisit sur le texte exact. */
+  function bibleCandidates(words, n) {
+    var out = [];
+    try { core.keywordSearch(words, n).forEach(function (r) { out.push({ ref: core.label(r), texte: core.text(r) }); }); } catch (e) {}
+    return out;
   }
   function parseRef(str) { var f = core.findRefs(String(str || ''), null, { abbr: true }); return f.length ? f[0] : null; }
   function onAnalyse(d) {
@@ -1175,23 +1182,62 @@ body.proj #panel { display: none; }
       aiStatus(); return;
     }
     ai.lastResult = d.verset ? (d.verset + ' (' + (+d.confiance || 0) + ' %)') : 'rien de précis';
-    var now = Date.now(), items = [];
+    var items = [];
     var v = d.verset ? parseRef(d.verset) : null, conf = +d.confiance || 0;
-    if (v && !(st.cur && core.key(v) === core.key(st.cur))) {
-      var k = core.key(v);
-      var refused = ai.refused[k] && now - ai.refused[k] < 180000;
-      var again = ai.shown[k] && now - ai.shown[k] < 20000;
-      if ($('aiAuto').checked && conf >= 90 && AUTO_TYPES[d.type] && !refused && !again) {
-        ai.shown[k] = now; ai.autoKey = k;
-        manual(v);
-        $('autoNote').textContent = "Affiché par l'IA : " + core.label(v) + ' (' + conf + ' %). Retour arrière pour annuler.';
-        clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 9000);
-      } else if (conf >= 55 && !refused) {
-        items.push({ ref: v, src: 'IA ' + conf + ' %' });
-      }
-    }
+    if (v && !(st.cur && core.key(v) === core.key(st.cur)) && conf >= 60) verify(v, d);
     (d.autres || []).forEach(function (o) { var r = parseRef(o); if (r) items.push({ ref: r, src: 'IA' }); });
     if (items.length) setSugg(items.concat(sg.list));
+  }
+
+  /* Claude Sonnet compare les paroles au texte exact du verset proposé, de ses voisins et des autres candidats. */
+  var vf = { inflight: false, calls: 0 };
+  function autoShow(ref, conf, how) {
+    var k = core.key(ref), now = Date.now();
+    if (st.cur && k === core.key(st.cur)) return true;
+    if (ai.refused[k] && now - ai.refused[k] < 180000) return false;
+    if (ai.shown[k] && now - ai.shown[k] < 20000) return true;
+    ai.shown[k] = now; ai.autoKey = k;
+    manual(ref);
+    $('autoNote').textContent = "Affiché par l'IA" + how + ' : ' + core.label(ref) + ' (' + conf + ' %). Retour arrière pour annuler.';
+    clearTimeout(autoTimer); autoTimer = setTimeout(function () { $('autoNote').textContent = ''; }, 9000);
+    return true;
+  }
+  function verify(v, d) {
+    var conf = +d.confiance || 0, canAuto = $('aiAuto').checked && AUTO_TYPES[d.type];
+    var set = [], seen = {};
+    function add(r) { if (r && !seen[core.key(r)]) { seen[core.key(r)] = 1; set.push(r); } }
+    add(v); add(core.prev(v)); add(core.next(v)); add(core.next(core.next(v) || v));
+    (d.autres || []).forEach(function (o) { add(parseRef(o)); });
+    core.keywordSearch(core.words(fullText()).slice(-60), 5).forEach(function (r) { add({ b: r.b, c: r.c, v: r.v }); });
+    set = set.slice(0, 12);
+    if (vf.inflight || vf.calls >= 400) {                     // pas de vérification possible : prudence
+      if (canAuto && conf >= 95) autoShow(v, conf, '');
+      else setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list));
+      return;
+    }
+    vf.inflight = true; vf.calls++;
+    fetch(svc('/verifie'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ code: dgKey(), texte: fullText().slice(-900),
+                             candidats: set.map(function (r) { return { ref: core.label(r), texte: core.text(r) }; }) }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (r) {
+        if (r.erreur || !('choix' in r)) {                     // vérification indisponible : on retombe sur Haiku seul
+          if (canAuto && conf >= 95) autoShow(v, conf, '');
+          else setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list));
+          return;
+        }
+        var c = r.choix ? parseRef(r.choix) : null, cc = +r.confiance || 0;
+        if (!c) {                                              // Sonnet ne reconnaît aucun de ces versets
+          if (conf >= 92) setSugg(sg.list.concat([{ ref: v, src: 'IA ?' }]));   // proposé en dernier, seulement si Haiku était très sûr
+          ai.lastResult = core.label(v) + ' non confirmé';
+          aiStatus(); return;
+        }
+        ai.lastResult = core.label(c) + ' (vérifié ' + cc + ' %)'; aiStatus();
+        if (canAuto && cc >= 85 && autoShow(c, cc, ' (vérifié)')) return;
+        setSugg([{ ref: c, src: 'IA ✓ ' + cc + ' %' }].concat(sg.list));
+      })
+      .catch(function () { setSugg([{ ref: v, src: 'IA ' + conf + ' %' }].concat(sg.list)); })
+      .then(function () { vf.inflight = false; });
   }
 
   function undo() {
